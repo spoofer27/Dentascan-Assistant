@@ -59,13 +59,11 @@ def _post_ui_log(message: str, source: str = "ServiceLog", color: str | None = N
 
 
 def main(stop_event):
+    _post_ui_log("Staging worker is starting...", source="ServiceLog")
     try:
         yesterday_check_counter = 0
         while not stop_event.is_set():
-            # print("Staging is working...")
-            _post_ui_log("Staging worker is starting...", source="ServiceLog")
             monitor = None
-
             try: # calling basic StagingLogic class
                 monitor = StagingLogic.from_config() # gets configurations
                 folder_path = monitor.ensure_today_folder() # gets today's folder
@@ -87,6 +85,7 @@ def main(stop_event):
                     suffix = time.strftime("%p", now).lower()
                     header_time = f"{hour}.{minute}{suffix}"
                     print(f"{date_str} {header_time} - Found {case_count} Cases", flush=True)
+                    _post_ui_log(f"{date_str} {header_time} - Found {case_count} Cases", source="ServiceLog")
                     for idx, case in enumerate(cases, start=1):
                         name = case.get("name", "")
                         case_date = case.get("date", "")
@@ -102,7 +101,8 @@ def main(stop_event):
                         case_has_project = case.get("has_project", False)
                         case_project_count = case.get("project_count", 0)
                         case_romexis = case.get("romexis", False)
-                        print(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", flush=True)
+                        print(f"    {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", flush=True)
+                        _post_ui_log(f"     {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
 
                     # Check yesterday's cases every 30 seconds (every 6 iterations)
                     yesterday_check_counter += 1 # counnt to 6 loops (30s) to check yesterday's cases
@@ -119,8 +119,11 @@ def main(stop_event):
                                 suffix = time.strftime("%p", now).lower()
                                 header_time = f"{hour}.{minute}{suffix}"
                                 print("=============================================================================", flush=True)
+                                _post_ui_log("=============================================================================", source="ServiceLog")
                                 print(f"Yesterday recovery: processed {yesterday_count} case(s)", flush=True)
+                                _post_ui_log(f"Yesterday recovery: processed {yesterday_count} case(s)", source="ServiceLog")
                                 print(f"{date_str} {header_time} - Found {yesterday_count} Cases", flush=True)
+                                _post_ui_log(f"{date_str} {header_time} - Found {yesterday_count} Cases", source="ServiceLog")
                                 for idx, case in enumerate(yesterday_cases, start=1):
                                     name = case.get("name", "")
                                     case_date = case.get("date", "")
@@ -137,6 +140,7 @@ def main(stop_event):
                                     case_project_count = case.get("project_count", 0)
                                     case_romexis = case.get("romexis", False)
                                     print(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", flush=True)
+                                    _post_ui_log(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
 
                         except Exception as exc:
                             _post_ui_log(f"Yesterday processing failed: {exc}", source="ServiceLog", color="red")

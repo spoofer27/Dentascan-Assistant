@@ -10,9 +10,9 @@ import threading
 import time
 from ctypes import wintypes
 
-from service_config import SERVICE_NAME
-HOST = os.environ.get("SERVICE_API_HOST", "127.0.0.1")
-PORT = int(os.environ.get("SERVICE_API_PORT", "8085"))
+from service_config import SERVICE_NAME, SERVICE_API_HOST, SERVICE_API_PORT
+HOST = os.environ.get("SERVICE_API_HOST", SERVICE_API_HOST)
+PORT = int(os.environ.get("SERVICE_API_PORT", str(SERVICE_API_PORT)))
 
 IS_WIN = os.name == "nt"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WIN and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -152,6 +152,97 @@ def run_sc(args):
     return result.returncode, result.stdout, result.stderr
 
 
+def _ps_single_quoted(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _windows_cli_quoted(value):
+    text = str(value)
+    if not text:
+        return '""'
+    if any(ch in text for ch in (' ', '\t', '"')):
+        return '"' + text.replace('"', '\\"') + '"'
+    return text
+
+
+def run_sc_elevated(args):
+    if not IS_WIN:
+        return 1, "", "Elevation is only supported on Windows"
+
+    arg_string = " ".join(_windows_cli_quoted(arg) for arg in args)
+    script = (
+        "$ErrorActionPreference='Stop';"
+        f"$p = Start-Process -FilePath 'sc.exe' -ArgumentList {_ps_single_quoted(arg_string)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru;"
+        "Write-Output $p.ExitCode"
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            creationflags=NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        return 1, "", "Elevated command timed out"
+    except Exception as exc:
+        return 1, "", str(exc)
+
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+
+    if "canceled by the user" in stderr.lower():
+        return 1, "", "Administrator approval was canceled"
+
+    if result.returncode != 0:
+        return result.returncode, stdout, stderr
+
+    exit_code = None
+    if stdout:
+        for line in reversed(stdout.splitlines()):
+            token = line.strip()
+            if token.isdigit():
+                exit_code = int(token)
+                break
+    if exit_code is None:
+        exit_code = 0
+
+    if exit_code == 0:
+        return 0, "Elevated command completed", ""
+    return exit_code, stdout, stderr or "Elevated command failed"
+
+
+def run_sc_with_auto_elevation(args):
+    if IS_WIN and not is_admin():
+        return run_sc_elevated(args)
+    return run_sc(args)
+
+
+def _friendly_sc_message(raw_output):
+    text = (raw_output or "").strip()
+    if not text:
+        return text
+
+    known = {
+        "5": "Access denied. Run the UI/API as Administrator or approve UAC.",
+        "1056": "Service is already running.",
+        "1060": "Service is not installed. Use Install first.",
+        "1062": "Service is not running.",
+    }
+    if text in known:
+        return f"{known[text]} (code {text})"
+    return text
+
+
 def run_wrapper(args):
     wrapper_path = os.path.join(os.path.dirname(__file__), "Service_Wrapper.py")
     result = subprocess.run(
@@ -284,39 +375,27 @@ class Handler(BaseHTTPRequestHandler):
             write_json(self, 200, {"ok": True, "message": "Disconnected"})
             return
         if parsed.path == "/api/start":
-            # Admin privileges are required to control Windows services
-            if not is_admin():
-                write_json(self, 200, {"ok": False, "output": "Administrator privileges required"})
-                return
-            code, out, err = run_sc(["start", SERVICE_NAME])
-            payload = {"ok": code == 0, "output": (out or err).strip()}
+            code, out, err = run_sc_with_auto_elevation(["start", SERVICE_NAME])
+            payload = {"ok": code == 0, "output": _friendly_sc_message((out or err))}
             # Always return 200; UI will read ok + output for user-friendly errors
             write_json(self, 200, payload)
             return
 
         if parsed.path == "/api/stop":
-            # Admin privileges are required to control Windows services
-            if not is_admin():
-                write_json(self, 200, {"ok": False, "output": "Administrator privileges required"})
-                return
-            code, out, err = run_sc(["stop", SERVICE_NAME])
-            payload = {"ok": code == 0, "output": (out or err).strip()}
+            code, out, err = run_sc_with_auto_elevation(["stop", SERVICE_NAME])
+            payload = {"ok": code == 0, "output": _friendly_sc_message((out or err))}
             # Always return 200; UI will read ok + output for user-friendly errors
             write_json(self, 200, payload)
             return
 
         if parsed.path == "/api/restart":
-            # Admin privileges are required to control Windows services
-            if not is_admin():
-                write_json(self, 200, {"ok": False, "output": "Administrator privileges required"})
-                return
-            stop_code, stop_out, stop_err = run_sc(["stop", SERVICE_NAME])
-            start_code, start_out, start_err = run_sc(["start", SERVICE_NAME])
+            stop_code, stop_out, stop_err = run_sc_with_auto_elevation(["stop", SERVICE_NAME])
+            start_code, start_out, start_err = run_sc_with_auto_elevation(["start", SERVICE_NAME])
             ok = stop_code == 0 and start_code == 0
             payload = {
                 "ok": ok,
-                "stop": (stop_out or stop_err).strip(),
-                "start": (start_out or start_err).strip(),
+                "stop": _friendly_sc_message((stop_out or stop_err)),
+                "start": _friendly_sc_message((start_out or start_err)),
             }
             # Always return 200; UI will surface details via payload
             write_json(self, 200, payload)
@@ -327,8 +406,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/install":
-            # code, out, err = run_wrapper(["install"])
-            code, out, err = run_sc(["install", SERVICE_NAME])
+            if not is_admin():
+                write_json(self, 200, {"ok": False, "output": "Administrator privileges required"})
+                return
+            code, out, err = run_wrapper(["install"])
             payload = {"ok": code == 0, "output": (out or err).strip()}
             write_json(self, 200 if code == 0 else 500, payload)
             return
@@ -340,14 +421,11 @@ class Handler(BaseHTTPRequestHandler):
                 write_json(self, 403, {"ok": False, "output": "Administrator privileges required"})
                 return
 
-            # code, out, err = run_wrapper(["remove"])
-            stop_code, stop_out, stop_err = run_sc(["stop", SERVICE_NAME])
-            code, out, err = run_sc(["delete", SERVICE_NAME])
+            code, out, err = run_wrapper(["remove"])
 
             payload = {
                 "ok": code == 0,
-                "stop": (stop_out or stop_err).strip(),
-                "delete": (out or err).strip(),
+                "output": (out or err).strip(),
             }
             write_json(self, 200 if code == 0 else 500, payload)
             return
