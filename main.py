@@ -34,6 +34,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QFont, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -54,12 +55,8 @@ except ImportError:
 
 try:
     from service import service_config
-    from service.service_logic import staging
-    from service.service_logic.staging import StagingLogic
 except ImportError:
     service_config = None
-    staging = None
-    StagingLogic = None
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -180,13 +177,14 @@ class CasesRequestWorker(QThread):
         cases_data = None
         error = None
         try:
-            if StagingLogic is None:
-                raise Exception("StagingLogic not available")
-            
-            monitor = StagingLogic.from_config()
-            # print(f"[CasesRequestWorker.run] StagingLogic created", flush=True)
-            
-            cases_data = monitor.get_cases_for_ui()
+            req = request.Request(API_BASE + "/api/cases", method="GET")
+            with request.urlopen(req, timeout=8) as response:
+                raw = response.read().decode("utf-8")
+            payload = json.loads(raw)
+            cases_data = {
+                "today": payload.get("today", []),
+                "yesterday": payload.get("yesterday", []),
+            }
             print(f"[CasesRequestWorker.run] Got cases - Today: {len(cases_data.get('today', []))} | Yesterday: {len(cases_data.get('yesterday', []))}", flush=True)
             
         except Exception as e:
@@ -314,15 +312,13 @@ class CaseRow(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 10, 12, 10)
         row.setSpacing(12)
-        print(f"case_data: {case_data}", flush=True)
+        # print(f"case_data: {case_data}", flush=True)
 
         self._add_text(row, case_data["id"], 88)
         self._add_text(row, case_data["name"], 130)
         self._add_text(row, case_data["scan_type"], 100)
-        self._add_text(row, case_data["pdf_count"], 64)
-        self._add_text(row, case_data["single_dicom_count"], 74)
-        self._add_text(row, case_data["image_count"], 72)
-        self._add_text(row, "Yes" if case_data["staged"] else "No", 120)
+        self._add_contact_cell(row, case_data.get("phone_values", []), "phone", 260)
+        self._add_contact_cell(row, case_data.get("email_values", []), "email", 260)
         self._add_text(row, case_data.get("pacs_text", "No"), 150)
         # row.addWidget(self._status_dot(case_data["staged"], 1))
         # row.addWidget(self._status_dot(case_data["pacs"], case_data["pacs_text"]), 1)
@@ -364,10 +360,114 @@ class CaseRow(QFrame):
         row.addWidget(action_button)
 
     def _add_text(self, parent: QHBoxLayout, text: str, width: int):
-        label = QLabel(text)
+        label = QLabel(str(text))
         label.setFixedWidth(width)
         label.setStyleSheet("color: #E5E7EB; font-size: 12px;")
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         parent.addWidget(label)
+
+    def _add_contact_cell(self, parent: QHBoxLayout, values: list, contact_type: str, width: int):
+        wrapper = QWidget()
+        wrapper.setFixedWidth(width)
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setFixedHeight(30)
+        combo.setMinimumWidth(width - 84)
+        combo.setStyleSheet(
+            """
+            QComboBox {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 6px;
+                color: #E5E7EB;
+                padding: 2px 6px 2px 6px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 18px;
+                border-left: 1px solid #374151;
+            }
+            """
+        )
+
+        unique_values = []
+        for value in values or []:
+            text = str(value).strip() if value is not None else ""
+            if text and text not in unique_values:
+                unique_values.append(text)
+
+        if unique_values:
+            combo.addItems(unique_values)
+        else:
+            combo.addItem("No saved values")
+
+        combo.lineEdit().setPlaceholderText("Add phone..." if contact_type == "phone" else "Add email...")
+
+        send_btn = QPushButton("send")
+        send_btn.setFixedSize(44, 26)
+        send_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #2563EB;
+                color: #F9FAFB;
+                border: none;
+                border-radius: 6px;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background-color: #1D4ED8; }
+            """
+        )
+
+        send_all_btn = QPushButton("all")
+        send_all_btn.setFixedSize(34, 26)
+        send_all_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #374151;
+                color: #E5E7EB;
+                border: none;
+                border-radius: 6px;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background-color: #4B5563; }
+            """
+        )
+
+        def _send_current():
+            value = combo.currentText().strip()
+            if value:
+                print(f"[CaseRow] send {contact_type}: {value}", flush=True)
+
+        def _send_all():
+            values_to_send = []
+            for i in range(combo.count()):
+                item = combo.itemText(i).strip()
+                if item and item not in values_to_send:
+                    values_to_send.append(item)
+            typed = combo.currentText().strip()
+            if typed and typed not in values_to_send:
+                values_to_send.append(typed)
+            if values_to_send:
+                print(f"[CaseRow] send all {contact_type}: {', '.join(values_to_send)}", flush=True)
+
+        send_btn.clicked.connect(_send_current)
+        send_all_btn.clicked.connect(_send_all)
+
+        layout.addWidget(combo, 1)
+        layout.addWidget(send_btn)
+        layout.addWidget(send_all_btn)
+        parent.addWidget(wrapper)
 
     def _status_dot(self, status: str, text: str) -> QWidget:
         colors = {
@@ -422,6 +522,8 @@ class DashboardWindow(QMainWindow):
         self.cases_worker = None  # Keep reference to cases worker
         self.today_cases_layout = None  # Will hold today's cases
         self.yesterday_cases_layout = None  # Will hold yesterday's cases
+        self.today_case_widgets = {}
+        self.yesterday_case_widgets = {}
         self.thread_pool = QThreadPool.globalInstance()
         # print("[DashboardWindow] Member variables initialized")
 
@@ -637,21 +739,7 @@ class DashboardWindow(QMainWindow):
         rows_layout.setSpacing(8)
         self.today_cases_layout = rows_layout  # Store for dynamic updates
 
-        rows = [
-            {
-                "id": "Unknown",
-                "name": "Loading...",
-                "scan_type": "CBCT",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "Unknown",
-                # "staged_pct": "",
-                "pacs": "Unknown",
-                # "pacs_text": "Loading...",
-                "action": "view",
-            },
-        ]
+        rows = []
 
         for case in rows:
             rows_layout.addWidget(CaseRow(case))
@@ -695,21 +783,7 @@ class DashboardWindow(QMainWindow):
         yesterday_layout.setSpacing(8)
         self.yesterday_cases_layout = yesterday_layout  # Store for dynamic updates
 
-        yesterday_rows = [
-            {
-                "id": "Unknown",
-                "name": "Loading...",
-                "scan_type": "CBCT",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "Unknown",
-                # "staged_pct": "",
-                "pacs": "Unknown",
-                # "pacs_text": "Loading...",
-                "action": "view",
-            },
-        ]
+        yesterday_rows = []
 
         for case in yesterday_rows:
             yesterday_layout.addWidget(CaseRow(case))
@@ -732,10 +806,8 @@ class DashboardWindow(QMainWindow):
             ("ID", 88),
             ("Name", 130),
             ("Scan Type", 100),
-            ("PDFs", 64),
-            ("DICOMs", 74),
-            ("Images", 72),
-            ("Staged", 120),
+            ("Phones", 260),
+            ("E-mails", 260),
             ("PACs Uploaded", 150),
             ("Action", 70),
         ]
@@ -781,6 +853,9 @@ class DashboardWindow(QMainWindow):
         try:
             service_state = payload.get("state", "").lower()
             service_online = service_state == "running"
+            ris_online = bool(payload.get("ris_online", False))
+            print("----------------------------------------")
+            print("ris_online =", payload.get("ris_online"))
             # print(f"[_handle_status_response] Service state from API: {service_state}, updating indicator to: {service_online}", flush=True)
             
             # Update indicators based on API response
@@ -791,7 +866,7 @@ class DashboardWindow(QMainWindow):
                 print(f"[_handle_status_response] [WARN] service_indicator is None!", flush=True)
                 
             if self.ris_indicator:
-                self.ris_indicator.set_online(True)  # Assume RIS is online if we got a response
+                self.ris_indicator.set_online(ris_online)
             if self.pacs_indicator:
                 self.pacs_indicator.set_online(True)  # Assume PACS is online if we got a response
         except Exception as e:
@@ -839,6 +914,78 @@ class DashboardWindow(QMainWindow):
         except Exception as e:
             print(f"[DashboardWindow._poll_cases] Exception: {e}", flush=True)
             logger.error(f"Error polling cases: {e}")
+
+    def _build_case_row_payload(self, case_data: dict, fallback_scan_type: str = "Unknown") -> dict:
+        return {
+            "id": case_data.get("case_id", "Unknown") if case_data.get("case_id") is not None else "Unknown",
+            "name": case_data.get("name", "Unknown"),
+            "scan_type": case_data.get("exam", fallback_scan_type),
+            "phone_values": [
+                case_data.get("pt_mobile_value"),
+                case_data.get("pt_phone_value"),
+                case_data.get("ref_mobile_value"),
+                case_data.get("ref_phone_value"),
+            ],
+            "email_values": [
+                case_data.get("pt_email_value"),
+                case_data.get("ref_email_value"),
+            ],
+            "pacs": case_data.get("is_uploaded", False),
+            "action": "view",
+        }
+
+    def _case_row_key(self, case_data: dict) -> str:
+        return "|".join([
+            str(case_data.get("case_id") or "Unknown"),
+            str(case_data.get("name") or "Unknown"),
+            str(case_data.get("date") or ""),
+            str(case_data.get("time") or ""),
+        ])
+
+    def _upsert_case_rows(self, layout: QVBoxLayout, widget_map: dict, cases: list, fallback_scan_type: str):
+        target_order = []
+
+        for index, case_data in enumerate(cases):
+            row_key = self._case_row_key(case_data)
+            row_payload = self._build_case_row_payload(case_data, fallback_scan_type=fallback_scan_type)
+            row_signature = json.dumps(row_payload, sort_keys=True, ensure_ascii=False)
+            target_order.append(row_key)
+
+            existing = widget_map.get(row_key)
+            if existing and existing.get("signature") == row_signature:
+                widget = existing.get("widget")
+                current_index = layout.indexOf(widget)
+                if widget is not None and current_index != index and current_index != -1:
+                    layout.removeWidget(widget)
+                    layout.insertWidget(index, widget)
+                continue
+
+            new_widget = CaseRow(row_payload)
+            if existing:
+                old_widget = existing.get("widget")
+                if old_widget is not None:
+                    layout.removeWidget(old_widget)
+                    old_widget.deleteLater()
+            layout.insertWidget(index, new_widget)
+            widget_map[row_key] = {
+                "widget": new_widget,
+                "signature": row_signature,
+            }
+
+        for old_key in list(widget_map.keys()):
+            if old_key not in target_order:
+                old_widget = widget_map[old_key].get("widget")
+                if old_widget is not None:
+                    layout.removeWidget(old_widget)
+                    old_widget.deleteLater()
+                widget_map.pop(old_key, None)
+
+    def _is_contact_dropdown_open(self) -> bool:
+        try:
+            combos = self.findChildren(QComboBox)
+            return any(combo.view().isVisible() for combo in combos)
+        except Exception:
+            return False
     
     def _handle_cases_response(self, cases_data: dict, error: str):
         """Handle cases response and update the UI"""
@@ -852,83 +999,29 @@ class DashboardWindow(QMainWindow):
             if not cases_data:
                 print(f"[_handle_cases_response] No cases data", flush=True)
                 return
-            
-            # Clear existing layouts
-            while self.today_cases_layout.count() > 0:
-                item = self.today_cases_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            
-            while self.yesterday_cases_layout.count() > 0:
-                item = self.yesterday_cases_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+
+            if self._is_contact_dropdown_open():
+                return
             
             # Populate today's cases
             today_cases = cases_data.get("today", [])
             print(f"[_handle_cases_response] Found {len(today_cases)} today's cases", flush=True)
-            
-            if today_cases:
-                for case_data in today_cases:
-                    try:
-                        # Format PACS upload progress
-                        pacs_progress = case_data.get("pacs_progress", {})
-                        pacs_text = self._format_pacs_progress(pacs_progress)
-                        # print(f"======================================")
-                        # print(f"pacs_progress = {pacs_progress}")
-                        
-                        case_row = {
-                            "id": case_data.get("case_id", "Unknown") if case_data.get("case_id") is not None else "Unknown",
-                            "name": case_data.get("name", "Unknown"),
-                            "scan_type": "CBCT",  # Placeholder as requested
-                            "pdf_count": str(case_data.get("pdf_count", "Unknown")),
-                            "single_dicom_count": str(case_data.get("single_dicom_count", "Unknown")),
-                            "image_count": str(case_data.get("image_count", "Unknown")),
-                            "staged": case_data.get("is_staged", False),
-                            "pacs": case_data.get("is_uploaded", False),
-                            # "pacs_text": pacs_text,
-                            "action": "view",
-                        }
-                        print(f"[_handle_cases_response] Adding today's case: {case_row['name']}", flush=True)
-                        self.today_cases_layout.insertWidget(0, CaseRow(case_row))
-                    except Exception as e:
-                        print(f"[_handle_cases_response] Error adding case row: {e}", flush=True)
-            
-            # Re-add stretch to push cases to top
-            self.today_cases_layout.addStretch(1)
-            print(f"[_handle_cases_response] No today's cases found" if not today_cases else "")
+            self._upsert_case_rows(
+                layout=self.today_cases_layout,
+                widget_map=self.today_case_widgets,
+                cases=today_cases,
+                fallback_scan_type="Unknown",
+            )
             
             # Populate yesterday's cases
             yesterday_cases = cases_data.get("yesterday", [])
             print(f"[_handle_cases_response] Found {len(yesterday_cases)} yesterday's cases", flush=True)
-            
-            if yesterday_cases:
-                for case_data in yesterday_cases:
-                    try:
-                        # Format PACS upload progress
-                        pacs_progress = case_data.get("pacs_progress", {})
-                        pacs_text = self._format_pacs_progress(pacs_progress)
-                        print(f"pacs_text = {pacs_text} for case {case_data.get('name', 'Unknown')}", flush=True)
-                        case_row = {
-                            "id": case_data.get("case_id", "Unknown") if case_data.get("case_id") is not None else "Unknown",
-                            "name": case_data.get("name", "Unknown"),
-                            "scan_type": "CBCT",  # Placeholder as requested
-                            "pdf_count": str(case_data.get("pdf_count", "Unknown")),
-                            "single_dicom_count": str(case_data.get("single_dicom_count", "Unknown")),
-                            "image_count": str(case_data.get("image_count", "Unknown")),
-                            "staged": case_data.get("is_staged", False),
-                            "pacs": case_data.get("is_uploaded", False),
-                            # "pacs_text": pacs_text,
-                            "action": "view",
-                        }
-                        print(f"[_handle_cases_response] Adding yesterday's case: {case_row['name']}", flush=True)
-                        self.yesterday_cases_layout.insertWidget(0, CaseRow(case_row))
-                    except Exception as e:
-                        print(f"[_handle_cases_response] Error adding case row: {e}", flush=True)
-            
-            # Re-add stretch to push cases to top
-            self.yesterday_cases_layout.addStretch(1)
-            print(f"[_handle_cases_response] No yesterday's cases found" if not yesterday_cases else "")
+            self._upsert_case_rows(
+                layout=self.yesterday_cases_layout,
+                widget_map=self.yesterday_case_widgets,
+                cases=yesterday_cases,
+                fallback_scan_type="CBCT",
+            )
             
             # print(f"[_handle_cases_response] Cases update complete", flush=True)
             
@@ -1116,10 +1209,8 @@ class DashboardWindow(QMainWindow):
                 "id": "PX-9001",
                 "name": "Ahmed Ali",
                 "scan_type": "CBCT",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "completed",
+                "phone_values": [],
+                "email_values": [],
                 # "staged_pct": "100%",
                 "pacs": "completed",
                 # "pacs_text": "Completed",
@@ -1129,10 +1220,8 @@ class DashboardWindow(QMainWindow):
                 "id": "PX-9002",
                 "name": "Fatima Hassan",
                 "scan_type": "CT SCAN",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "processing",
+                "phone_values": [],
+                "email_values": [],
                 # "staged_pct": "45%",
                 "pacs": "processing",
                 # "pacs_text": "32%",
@@ -1255,10 +1344,8 @@ class DashboardWindow(QMainWindow):
                 "id": "ACC-5001",
                 "name": "Mohammed Karim",
                 "scan_type": "CT SCAN",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "completed",
+                "phone_values": [],
+                "email_values": [],
                 # "staged_pct": "100%",
                 "pacs": "completed",
                 # "pacs_text": "Completed",
@@ -1268,10 +1355,8 @@ class DashboardWindow(QMainWindow):
                 "id": "ACC-5002",
                 "name": "Sara Jamal",
                 "scan_type": "MRI",
-                "pdf_count": "Unknown",
-                "single_dicom_count": "Unknown",
-                "image_count": "Unknown",
-                "staged": "completed",
+                "phone_values": [],
+                "email_values": [],
                 # "staged_pct": "100%",
                 "pacs": "processing",
                 # "pacs_text": "89%",

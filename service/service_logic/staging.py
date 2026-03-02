@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 import json
 from urllib import request
 from urllib.error import URLError
+import threading
 
 try:
     import service_config
@@ -19,12 +20,36 @@ except ImportError:
         sys.path.insert(0, service_dir)
     import service_config
     from service_config import SERVICE_NAME
-import threading
+
 try:
     from .staging_logic import StagingLogic
 except ImportError:
     from staging_logic import StagingLogic
 
+logger = logging.getLogger(__name__)
+import importlib
+try:
+    from . import ris_logic
+    logger.info("Imported ris_logic via package-relative import")
+except ImportError:
+    try:
+        ris_logic = importlib.import_module("service.service_logic.ris_logic")
+        logger.info("Imported ris_logic via service.service_logic path")
+    except Exception:
+        try:
+            service_logic_dir = os.path.dirname(os.path.abspath(__file__))
+            if service_logic_dir not in sys.path:
+                sys.path.insert(0, service_logic_dir)
+            import ris_logic
+            logger.info("Imported ris_logic via local-path fallback")
+        except ImportError as exc:
+            logger.exception("Failed to import ris_logic module", exc_info=exc)
+            ris_logic = None
+    
+if ris_logic is None:
+    logger.error("ris_logic is unavailable after all import attempts")
+else:
+    logger.info("ris_logic module is ready")
 
 def _run_console_debug():
     stop_event = threading.Event()
@@ -62,6 +87,7 @@ def main(stop_event):
     _post_ui_log("Staging worker is starting...", source="ServiceLog")
     try:
         yesterday_check_counter = 0
+        ris_counter = 60 # start with 60 to trigger RIS login immediately
         while not stop_event.is_set():
             monitor = None
             try: # calling basic StagingLogic class
@@ -145,6 +171,20 @@ def main(stop_event):
                         except Exception as exc:
                             _post_ui_log(f"Yesterday processing failed: {exc}", source="ServiceLog", color="red")
 
+                    ris_counter += 1 # count to 60 loops (5min) to run RIS
+                    if ris_counter >= 60: # reset counter and run RIS
+                        ris_counter = 0
+                        ris_enabled = ris_logic is not None
+                        if ris_enabled:
+                            try:
+                                ris_logic.start_login()
+                                time.sleep(5)
+                            except Exception as exc:
+                                _post_ui_log(f"Error during RIS login: {exc}", source="StagingLogic")
+                        else:
+                            _post_ui_log("RIS:) module unavailable; skipping RIS login", source="StagingLogic")
+
+                        
                 except Exception as exc:
                     print(f"Error in staging loop: {exc}")
                     servicemanager.LogErrorMsg(f"Error in staging loop: {exc}")

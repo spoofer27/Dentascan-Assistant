@@ -9,8 +9,11 @@ from collections import deque
 import threading
 import time
 from ctypes import wintypes
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from service_config import SERVICE_NAME, SERVICE_API_HOST, SERVICE_API_PORT
+from service_config import SERVICE_NAME, SERVICE_API_HOST, SERVICE_API_PORT, SERVICE_STAGING_PATH
+
 HOST = os.environ.get("SERVICE_API_HOST", SERVICE_API_HOST)
 PORT = int(os.environ.get("SERVICE_API_PORT", str(SERVICE_API_PORT)))
 
@@ -44,6 +47,25 @@ STATE_MAP = {
 _ui_log_buffer = deque(maxlen=1000)
 _ui_log_lock = threading.Lock()
 _ui_log_next_id = 1
+
+_ris_state_lock = threading.Lock()
+_ris_online = False
+_ris_updated_ts = None
+
+
+def set_ris_state(online, timestamp=None):
+    global _ris_online, _ris_updated_ts
+    with _ris_state_lock:
+        _ris_online = bool(online)
+        _ris_updated_ts = timestamp if isinstance(timestamp, (int, float)) else time.time()
+
+
+def get_ris_state():
+    with _ris_state_lock:
+        return {
+            "ris_online": _ris_online,
+            "ris_updated_ts": _ris_updated_ts,
+        }
 
 def append_ui_log(message, source=None, timestamp=None):
     global _ui_log_next_id
@@ -282,29 +304,93 @@ def parse_state(sc_output):
 def get_service_status():
     try:
         state = query_service_state(SERVICE_NAME)
-        return {
+        payload = {
             "ok": True,
             "service": SERVICE_NAME,
             "state": state,
             "running": state == "RUNNING",
         }
+        payload.update(get_ris_state())
+        return payload
     except Exception as e:
         # Fallback to sc.exe (hidden window)
         code, out, err = run_sc(["query", SERVICE_NAME])
         if code != 0:
-            return {
+            payload = {
                 "ok": False,
                 "service": SERVICE_NAME,
                 "state": "UNKNOWN",
                 "running": False,
                 "error": (err or out).strip(),
             }
+            payload.update(get_ris_state())
+            return payload
         state = parse_state(out)
-        return {
+        payload = {
             "ok": True,
             "service": SERVICE_NAME,
             "state": state,
             "running": state == "RUNNING",
+        }
+        payload.update(get_ris_state())
+        return payload
+
+
+def get_cases_data():
+    try:
+        def _day_folder(target_dt: datetime) -> Path:
+            staging_root = Path(SERVICE_STAGING_PATH) / "Staging"
+            return (
+                staging_root
+                / target_dt.strftime("%Y")
+                / target_dt.strftime("%m-%Y")
+                / target_dt.strftime("%d-%m-%Y")
+            )
+
+        def _load_day_cases(target_dt: datetime) -> list:
+            day_folder = _day_folder(target_dt)
+            if not day_folder.exists():
+                return []
+
+            cases = []
+            case_dirs = sorted(
+                [item for item in day_folder.iterdir() if item.is_dir()],
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True,
+            )
+            for case_dir in case_dirs:
+                details_file = case_dir / f"{case_dir.name}_details.json"
+                if not details_file.exists():
+                    matches = list(case_dir.glob("*_details.json"))
+                    if not matches:
+                        continue
+                    details_file = matches[0]
+
+                try:
+                    with details_file.open("r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                    if isinstance(payload, dict):
+                        cases.append(payload)
+                except Exception:
+                    continue
+            return cases
+
+        now = datetime.now()
+        today_cases = _load_day_cases(now)
+        yesterday_cases = _load_day_cases(now - timedelta(days=1))
+
+        return {
+            "ok": True,
+            "today": today_cases,
+            "yesterday": yesterday_cases,
+        }
+    except Exception as exc:
+        append_ui_log(f"Cases API error: {exc}", source="service_api")
+        return {
+            "ok": False,
+            "error": str(exc),
+            "today": [],
+            "yesterday": [],
         }
 
 
@@ -324,6 +410,11 @@ class Handler(BaseHTTPRequestHandler):
             status = get_service_status()
             status["apiConnected"] = True
             write_json(self, 200, status)
+            return
+
+        if parsed.path == "/api/cases":
+            payload = get_cases_data()
+            write_json(self, 200, payload)
             return
 
         if parsed.path == "/api/ui-log":
@@ -346,6 +437,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/ris-status":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except Exception:
+                length = 0
+            body = self.rfile.read(length) if length > 0 else b""
+            try:
+                data = json.loads(body.decode("utf-8")) if body else {}
+            except Exception:
+                data = {}
+
+            online = bool(data.get("online", False))
+            ts = data.get("timestamp")
+            set_ris_state(online, timestamp=ts)
+            write_json(self, 200, {"ok": True, "ris_online": online})
+            return
+
         if parsed.path == "/api/ui-log":
             try:
                 length = int(self.headers.get("Content-Length", "0"))

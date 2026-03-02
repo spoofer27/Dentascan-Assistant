@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import shutil
 import threading
 import pydicom
@@ -16,6 +17,7 @@ from logging.handlers import RotatingFileHandler
 import json
 from urllib import request
 from urllib.error import URLError
+import importlib
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.encaps import encapsulate, generate_pixel_data_frame
 from pydicom.uid import (
@@ -25,6 +27,7 @@ from pydicom.uid import (
     PYDICOM_IMPLEMENTATION_UID,
     generate_uid,
 )
+
 try:
     import service_config
 except ImportError:
@@ -33,6 +36,31 @@ except ImportError:
     if service_dir not in sys.path:
         sys.path.insert(0, service_dir)
     import service_config
+
+logger = logging.getLogger(__name__)
+
+try:
+    from . import ris_logic
+    logger.info("Imported ris_logic via package-relative import")
+except ImportError:
+    try:
+        ris_logic = importlib.import_module("service.service_logic.ris_logic")
+        logger.info("Imported ris_logic via service.service_logic path")
+    except Exception:
+        try:
+            service_logic_dir = os.path.dirname(os.path.abspath(__file__))
+            if service_logic_dir not in sys.path:
+                sys.path.insert(0, service_logic_dir)
+            import ris_logic
+            logger.info("Imported ris_logic via local-path fallback")
+        except ImportError as exc:
+            logger.exception("Failed to import ris_logic module", exc_info=exc)
+            ris_logic = None
+    
+if ris_logic is None:
+    logger.error("ris_logic is unavailable after all import attempts")
+else:
+    logger.info("ris_logic module is ready")
 
 # global lock for json operations
 file_lock = threading.Lock()
@@ -52,6 +80,8 @@ class StagingLogic:
     date_format: str = "%d-%m-%Y"
     # Institution name for the monitor.
     institution_name: str = ""
+    # Enable RIS enrichment (Selenium search) while scanning cases.
+    ris_enabled: bool = True
 
 
     def _post_ui_log(self, message: str, source: str = "StagingLogic"):
@@ -69,14 +99,15 @@ class StagingLogic:
             pass
         except Exception:
             pass
-
+    
     @classmethod
-    def from_config(cls) -> "StagingLogic":
+    def from_config(cls, ris_enabled: bool = True) -> "StagingLogic":
         # Build the monitor using the root path from service_config.
         return cls(
             root_path=Path(service_config.SERVICE_ROOT_PATH),
             staging_path=Path(service_config.SERVICE_STAGING_PATH),
             institution_name=service_config.INSTITUTION_NAME,
+            ris_enabled=ris_enabled,
         )
     
     def ensure_today_folder(self) -> Path:
@@ -323,6 +354,8 @@ class StagingLogic:
                 if current_content == new_content: # 🚫 No change → skip writing
                     return False  # nothing updated
 
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
             with temp_file.open("w", encoding="utf-8") as f: # ✅ Something changed → write temp and replace
                 f.write(new_content)
 
@@ -330,7 +363,7 @@ class StagingLogic:
             print(f"Case {case.get('name', '')} details written", flush=True)
         # 🔓 LOCK END
 
-    def find_cases(self):
+    def find_cases(self):            
         today_staging_folder = self.ensure_today_staging_folder()
         today_folder_name = datetime.now().strftime(self.date_format)
         today_folder = self.root_path / today_folder_name
@@ -340,6 +373,16 @@ class StagingLogic:
 
         EXCLUDED_NAMES = {"cbct", "new folder"}
         cases = []
+        
+        ris_enabled = self.ris_enabled and ris_logic is not None
+        # if ris_enabled:
+        #     try:
+        #         ris_logic.start_login()
+        #         time.sleep(5)
+        #     except Exception as exc:
+        #         self._post_ui_log(f"Error during RIS login: {exc}", source="StagingLogic")
+        # else:
+        #     self._post_ui_log("RIS module unavailable; skipping RIS login", source="StagingLogic")
 
         for case in today_folder.iterdir():
             
@@ -364,7 +407,7 @@ class StagingLogic:
                             case_date = self._format_case_date(stat.st_ctime)
                             case_time = self._format_case_time(stat.st_mtime)
                         except Exception:
-                            self._post_ui_log(f"Found case folder: {case.name} - Date/Time info unavailable")
+                            self._post_ui_log(f"Found case folder: {case.name} - Date/Time info unavailable", source="StagingLogic")
                             case_date = case_time = ""
                         
                         # vars 
@@ -395,6 +438,16 @@ class StagingLogic:
                         orthanc_folder.mkdir(parents=True, exist_ok=True)
                         case_labels = []
                         case_id = None
+                        ris= None
+                        exam = None
+                        pt = None
+                        pt_email_value = None
+                        pt_phone_value = None
+                        pt_mobile_value = None
+                        ref_doc = None
+                        ref_email_value = None
+                        ref_phone_value = None
+                        ref_mobile_value = None
 
                         try: # main checking
                             stack = [case]
@@ -422,7 +475,16 @@ class StagingLogic:
                                                                 case_id = id_in_patient_name.group(0)
                                                             else:
                                                                 case_id = patient_id if patient_id else None
+                                                        
+                                                        if ris_enabled and ris is None and case_id is not None: # if case_id found and ris not searched yet, search in RIS
+                                                            try: # search case by code in RIS
+                                                                ris = ris_logic.run_search_case_by_code(case_id)
 
+                                                            except Exception as exc:
+                                                                self._post_ui_log(f"Error searching case by code {case_id}: {exc}")
+                                                        else:
+                                                            skip_reason = "case_id is None" if case_id is None else ("RIS unavailable" if not ris_enabled else "RIS data already found")
+                                                        
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
 
@@ -447,6 +509,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
+                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                             if int(number_of_frames) > 1:  # single dicom with multiple frames
                                                                 single_dicom_count += 1 # count
@@ -475,6 +538,7 @@ class StagingLogic:
                                                 
                                                 try: # trying to read dicom
                                                     ds = pydicom.dcmread(item, stop_before_pixels=True, force=True)
+                                                    full_ds = pydicom.dcmread(item, force=True)
                                                     impl_version = getattr(getattr(ds, "file_meta", None), "ImplementationVersionName", "")
                                                     romexis = "ROMEXIS" in str(impl_version).upper() if not romexis else romexis
                                                     number_of_frames = getattr(ds, "NumberOfFrames", None)
@@ -490,6 +554,14 @@ class StagingLogic:
                                                         else:
                                                             case_id = patient_id if patient_id else None
 
+                                                    if ris_enabled and ris is None and case_id is not None: # if case_id found and ris not searched yet, search in RIS
+                                                        try: # search case by code in RIS
+                                                            ris = ris_logic.run_search_case_by_code(case_id)
+                                                        except Exception as exc:
+                                                            self._post_ui_log(f"Error searching case by code {case_id}: {exc}")
+                                                    else:
+                                                        skip_reason = "case_id is None" if case_id is None else ("RIS unavailable" if not ris_enabled else "RIS data already found")
+
                                                     if not number_of_frames: # number_of_frames doesn't exist, stage all dicoms
                                                         try: # copy dicom to staging dicom folder
                                                             if not dicoms_folder.exists(): # create dicoms folder
@@ -500,11 +572,12 @@ class StagingLogic:
                                                                     continue # skip
                                                             else: # copy file then continue
                                                                 shutil.copy2(item, dest_path)
-                                                                continue
+                                                                pass
                                                         except Exception as exc: # error copying
                                                             self._post_ui_log(f"Failed to copy DICOM file {item.name} to dicoms for case {case.name}: {exc}")
                                                             pass
                                                         if modality.upper() != "CT":  # 2D dicom
+                                                            self._post_ui_log(f"2D DIICOM")
                                                             dicom_2d_count += 1 # count
                                                             dicom_2d_files.append(item) # add
                                                             dicom_files.append(item) # add to dicom list
@@ -513,14 +586,17 @@ class StagingLogic:
                                                             out_path = orthanc_folder / item.name # orthanc staging path
                                                             if out_path.exists(): # check item exists
                                                                     if out_path.stat().st_size == item.stat().st_size: # check size
+                                                                        self._post_ui_log(f"exist......")
                                                                         continue # skip
                                                             if not getattr(ds, "file_meta", None): # ensure file_meta exists
-                                                                ds.file_meta = FileMetaDataset()
+                                                                full_ds.file_meta = FileMetaDataset()
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
-                                                                 ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
-                                                            ds.InstitutionName = self.institution_name # update institution name
-                                                            ds.save_as(out_path, write_like_original=False) # save to orthanc staging
+                                                                 full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
+                                                            full_ds.InstitutionName = self.institution_name # update institution name
+                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                         else:  # multi-file dicom
+                                                            self._post_ui_log(f"Multi-file DICOM")
                                                             series_uid = getattr(ds, "SeriesInstanceUID", None)
                                                             if not series_uid:
                                                                 series_uid = f"unknown-{case.name}"
@@ -635,6 +711,16 @@ class StagingLogic:
             
             is_staged = self._is_case_staged(case.name, today_staging_folder) # Check if case is already staged
             case_labels = list(dict.fromkeys(case_labels))  # dedupe, keep order
+            if ris is not None:
+                pt = ris.get("pt", "")
+                exam = ris.get("exam", "")  
+                pt_email_value = ris.get("pt_email_value", "")
+                pt_phone_value = ris.get("pt_phone_value", "")
+                pt_mobile_value = ris.get("pt_mobile_value", "")
+                ref_doc = ris.get("ref_doc", "")
+                ref_email_value = ris.get("ref_email_value", "")
+                ref_phone_value = ris.get("ref_phone_value", "")
+                ref_mobile_value = ris.get("ref_mobile_value", "")
 
             case_info = {
                 "case_id": case_id,
@@ -649,12 +735,23 @@ class StagingLogic:
                 "single_dicom_count": single_dicom_count,
                 "has_multiple_dicom": has_multiple_dicom,
                 "multiple_dicom_count": multiple_dicom_count,
+                "dicom_2d_count": dicom_2d_count,
                 "romexis": romexis,
                 "has_project": has_project,
                 "project_count": project_count,
                 'is_staged': is_staged,
-                'case_labels': case_labels
+                "pt": pt, 
+                "exam": exam, 
+                "ref_doc": ref_doc,
+                "ref_email_value": ref_email_value,
+                "ref_phone_value": ref_phone_value,
+                "ref_mobile_value": ref_mobile_value,
+                "pt_email_value": pt_email_value,
+                "pt_phone_value": pt_phone_value,
+                "pt_mobile_value": pt_mobile_value,
+                'case_labels': case_labels,
                 }
+            self._post_ui_log(f"dicom_2d_count: {case_info['dicom_2d_count']}", source="StagingLogic")
             case_info_path = today_staging_folder / case.name / f"{case.name}_details.json"
             self.write_case(case_info, case_info_path)
 
@@ -671,10 +768,20 @@ class StagingLogic:
                 "single_dicom_count": single_dicom_count,
                 "has_multiple_dicom": has_multiple_dicom,
                 "multiple_dicom_count": multiple_dicom_count,
+                "dicom_2d_count": dicom_2d_count,
                 "romexis": romexis,
                 "has_project": has_project,
                 "project_count": project_count,
                 'is_staged': is_staged,
+                "pt": pt, 
+                "exam": exam, 
+                "ref_doc": ref_doc,
+                "ref_email_value": ref_email_value,
+                "ref_phone_value": ref_phone_value,
+                "ref_mobile_value": ref_mobile_value,
+                "pt_email_value": pt_email_value,
+                "pt_phone_value": pt_phone_value,
+                "pt_mobile_value": pt_mobile_value,
                 'case_labels': case_labels
                 })
 
@@ -689,6 +796,17 @@ class StagingLogic:
 
         EXCLUDED_NAMES = {"cbct", "new folder"}
         processed_cases = []
+
+        ris_enabled = self.ris_enabled and ris_logic is not None
+        # if ris_enabled:
+        #     try:
+        #         ris_logic.start_login()
+        #         time.sleep(5)
+        #     except Exception as exc:
+        #         self._post_ui_log(f"Error during RIS login: {exc}", source="StagingLogic")
+        # else:
+        #     self._post_ui_log("RIS module unavailable; skipping RIS login", source="StagingLogic")
+
         
         for case in yesterday_folder.iterdir():
 
@@ -744,6 +862,16 @@ class StagingLogic:
                         orthanc_folder.mkdir(parents=True, exist_ok=True)
                         case_labels = []
                         case_id = None
+                        ris= None
+                        exam = None
+                        pt = None
+                        pt_email_value = None
+                        pt_phone_value = None
+                        pt_mobile_value = None
+                        ref_doc = None
+                        ref_email_value = None
+                        ref_phone_value = None
+                        ref_mobile_value = None
 
                         try: # main checking
                             stack = [case]
@@ -772,6 +900,16 @@ class StagingLogic:
                                                             else:
                                                                 case_id = patient_id if patient_id else None
 
+                                                        if ris_enabled and ris is None and case_id is not None: # if case_id found and ris not searched yet, search in RIS
+                                                            try: # search case by code in RIS
+                                                                ris = ris_logic.run_search_case_by_code(case_id)
+
+                                                            except Exception as exc:
+                                                                self._post_ui_log(f"Error searching case by code {case_id}: {exc}")
+                                                        else:
+                                                            skip_reason = "case_id is None" if case_id is None else ("RIS unavailable" if not ris_enabled else "RIS data already found")
+                                                        
+
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
 
@@ -796,6 +934,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
+                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
 
                                                             if int(number_of_frames) > 1:  # single dicom with multiple frames
@@ -825,6 +964,7 @@ class StagingLogic:
                                                 
                                                 try: # trying to read dicom
                                                     ds = pydicom.dcmread(item, stop_before_pixels=True, force=True)
+                                                    full_ds = pydicom.dcmread(item, force=True)
                                                     impl_version = getattr(getattr(ds, "file_meta", None), "ImplementationVersionName", "")
                                                     romexis = "ROMEXIS" in str(impl_version).upper() if not romexis else romexis
                                                     number_of_frames = getattr(ds, "NumberOfFrames", None)
@@ -839,6 +979,14 @@ class StagingLogic:
                                                         else:
                                                             case_id = patient_id if patient_id else None
 
+                                                    if ris_enabled and ris is None and case_id is not None: # if case_id found and ris not searched yet, search in RIS
+                                                        try: # search case by code in RIS
+                                                            ris = ris_logic.run_search_case_by_code(case_id)
+                                                        except Exception as exc:
+                                                            self._post_ui_log(f"Error searching case by code {case_id}: {exc}")
+                                                    else:
+                                                        skip_reason = "case_id is None" if case_id is None else ("RIS unavailable" if not ris_enabled else "RIS data already found")
+
                                                     study_info = self._extract_study_info(ds) if study_info is None else study_info
 
                                                     if not number_of_frames: # number_of_frames doesn't exist, stage all dicoms
@@ -851,7 +999,7 @@ class StagingLogic:
                                                                     continue # skip
                                                             else: # copy file then continue
                                                                 shutil.copy2(item, dest_path)
-                                                                continue
+                                                                pass
                                                         except Exception as exc: # error copying
                                                             self._post_ui_log(f"Failed to copy DICOM file {item.name} to dicoms for case {case.name}: {exc}")
                                                             pass
@@ -866,11 +1014,12 @@ class StagingLogic:
                                                                     if out_path.stat().st_size == item.stat().st_size: # check size
                                                                         continue # skip
                                                             if not getattr(ds, "file_meta", None): # ensure file_meta exists
-                                                                ds.file_meta = FileMetaDataset()
+                                                                full_ds.file_meta = FileMetaDataset()
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
-                                                                 ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
-                                                            ds.InstitutionName = self.institution_name # update institution name
-                                                            ds.save_as(out_path, write_like_original=False) # save to orthanc staging
+                                                                 full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
+                                                            full_ds.InstitutionName = self.institution_name # update institution name
+                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                         else:  # multi-file dicom
                                                             series_uid = getattr(ds, "SeriesInstanceUID", None)
                                                             if not series_uid:
@@ -986,7 +1135,16 @@ class StagingLogic:
             
             is_staged = self._is_case_staged(case.name, yesterday_staging_folder) # Check if case is already staged
             case_labels = list(dict.fromkeys(case_labels))  # dedupe, keep order
-
+            if ris is not None:
+                pt = ris.get("pt", "")
+                exam = ris.get("exam", "")  
+                pt_email_value = ris.get("pt_email_value", "")
+                pt_phone_value = ris.get("pt_phone_value", "")
+                pt_mobile_value = ris.get("pt_mobile_value", "")
+                ref_doc = ris.get("ref_doc", "")
+                ref_email_value = ris.get("ref_email_value", "")
+                ref_phone_value = ris.get("ref_phone_value", "")
+                ref_mobile_value = ris.get("ref_mobile_value", "")
 
             processed_case_info = {
                 "case_id": case_id,
@@ -1001,10 +1159,20 @@ class StagingLogic:
                 "single_dicom_count": single_dicom_count,
                 "has_multiple_dicom": has_multiple_dicom,
                 "multiple_dicom_count": multiple_dicom_count,
+                "dicom_2d_count": dicom_2d_count,
                 "romexis": romexis,
                 "has_project": has_project,
                 "project_count": project_count,
                 'is_staged': is_staged,
+                "pt": pt, 
+                "exam": exam, 
+                "ref_doc": ref_doc,
+                "ref_email_value": ref_email_value,
+                "ref_phone_value": ref_phone_value,
+                "ref_mobile_value": ref_mobile_value,
+                "pt_email_value": pt_email_value,
+                "pt_phone_value": pt_phone_value,
+                "pt_mobile_value": pt_mobile_value,
                 'case_labels': case_labels
                 }
             processed_case_info_path = yesterday_staging_folder / case.name / f"{case.name}_details.json"
@@ -1023,21 +1191,31 @@ class StagingLogic:
                 "single_dicom_count": single_dicom_count,
                 "has_multiple_dicom": has_multiple_dicom,
                 "multiple_dicom_count": multiple_dicom_count,
+                "dicom_2d_count": dicom_2d_count,
                 "romexis": romexis,
                 "has_project": has_project,
                 "project_count": project_count,
                 'is_staged': is_staged,
+                "pt": pt, 
+                "exam": exam, 
+                "ref_doc": ref_doc,
+                "ref_email_value": ref_email_value,
+                "ref_phone_value": ref_phone_value,
+                "ref_mobile_value": ref_mobile_value,
+                "pt_email_value": pt_email_value,
+                "pt_phone_value": pt_phone_value,
+                "pt_mobile_value": pt_mobile_value,
                 'case_labels': case_labels
                 })
 
         if processed_cases:
-            self._post_ui_log(f"Yesterday processing: {len(processed_cases)} case(s) processed", source="FolderMonitor")
-        
+            # self._post_ui_log(f"Yesterday processing: {len(processed_cases)} case(s) processed", source="FolderMonitor")
+            pass
         return len(processed_cases), processed_cases
 
     def get_cases_for_ui(self) -> dict:
         today_count, today_cases = self.find_cases()
-        yesterday_count, yesterday_cases = self.find_cases()
+        yesterday_count, yesterday_cases = self.find_yesterday_cases()
         
         return {
             "today": today_cases,

@@ -5,3 +5,5 @@ pywin32>=306
 pydicom>=2.4
 Pillow>=10
 numpy>=1.26
+selenium>=4.38
+webdriver-manager>=4.0
