@@ -1,0 +1,1331 @@
+import io
+import json
+import sys
+import threading
+from pathlib import Path
+from urllib import request
+from urllib.error import URLError
+
+# Setup logging for pythonw compatibility
+import logging
+log_file = Path(__file__).parent / "app_error.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def safe_flush():
+    """Safe flush that works when stdout is None (pythonw)"""
+    try:
+        if sys.stdout:
+            sys.stdout.flush()
+    except (AttributeError, ValueError):
+        pass
+
+from PIL import Image
+from PyQt6.QtCore import (
+    QBuffer, QIODevice, QObject, QRunnable, QThread, QThreadPool, QTimer, Qt, pyqtSignal
+)
+from PyQt6.QtGui import QFont, QIcon, QImage, QPixmap
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+try:
+    from qfluentwidgets import Theme, setTheme
+except ImportError:
+    Theme = None
+    setTheme = None
+
+try:
+    from service import service_config
+    from service.service_logic import staging
+    from service.service_logic.staging import StagingLogic
+except ImportError:
+    service_config = None
+    staging = None
+    StagingLogic = None
+
+
+ROOT_DIR = Path(__file__).resolve().parent
+ICON_DIR = ROOT_DIR / "res" / "icons"
+
+if service_config:
+    API_HOST = service_config.SERVICE_API_HOST
+    API_PORT = service_config.SERVICE_API_PORT
+else:
+    API_HOST = "127.0.0.1"
+    API_PORT = 8085
+
+API_BASE = f"http://{API_HOST}:{API_PORT}"
+
+
+def image_to_qicon(image: Image.Image) -> QIcon:
+    rgba = image.convert("RGBA")
+    raw = rgba.tobytes("raw", "RGBA")
+    q_image = QImage(raw, rgba.width, rgba.height, QImage.Format.Format_RGBA8888)
+    return QIcon(QPixmap.fromImage(q_image.copy()))
+
+
+class RequestWorkerSignals(QObject):
+    finished = pyqtSignal(str, object, str)
+
+
+class StatusRequestWorker(QThread):
+    finished = pyqtSignal(str, object, str)
+
+    def __init__(self, method: str, path: str):
+        super().__init__()
+        self.method = method
+        self.path = path
+        # print(f"[StatusRequestWorker.__init__] Created worker for {method} {path}", flush=True)
+
+    def run(self):
+        # print(f"[StatusRequestWorker.run] ===== START (Thread: {threading.current_thread().name}) =====", flush=True)
+        payload = None
+        error = None
+        try:
+            try:
+                try:
+                    try:
+                        # print(f"[StatusRequestWorker.run] Step 1: Building URL...", flush=True)
+                        full_url = API_BASE + self.path
+                        # print(f"[StatusRequestWorker.run] Step 2: URL built = {full_url}", flush=True)
+                    except Exception as e:
+                        print(f"[StatusRequestWorker.run] Exception in URL building: {type(e).__name__}: {e}", flush=True)
+                        error = f"URL error: {e}"
+                        return
+                        
+                    try:
+                        # print(f"[StatusRequestWorker.run] Step 3: Creating request...", flush=True)
+                        req = request.Request(full_url, method=self.method)
+                        # print(f"[StatusRequestWorker.run] Step 4: Request created", flush=True)
+                    except Exception as e:
+                        print(f"[StatusRequestWorker.run] Exception creating request: {type(e).__name__}: {e}", flush=True)
+                        error = f"Request creation error: {e}"
+                        return
+                    
+                    try:
+                        # print(f"[StatusRequestWorker.run] Step 5: Opening URL...", flush=True)
+                        response = request.urlopen(req, timeout=3)
+                        # print(f"[StatusRequestWorker.run] Step 6: Got response", flush=True)
+                    except Exception as e:
+                        print(f"[StatusRequestWorker.run] Exception opening URL: {type(e).__name__}: {e}", flush=True)
+                        error = f"URL open error: {e}"
+                        return
+                    
+                    try:
+                        # print(f"[StatusRequestWorker.run] Step 7: Reading response...", flush=True)
+                        raw = response.read().decode("utf-8")
+                        response.close()
+                        # print(f"[StatusRequestWorker.run] Step 8: Response read, len={len(raw)}", flush=True)
+                    except Exception as e:
+                        print(f"[StatusRequestWorker.run] Exception reading response: {type(e).__name__}: {e}", flush=True)
+                        error = f"Read error: {e}"
+                        return
+                    
+                    try:
+                        # print(f"[StatusRequestWorker.run] Step 9: Parsing JSON...", flush=True)
+                        payload = json.loads(raw)
+                        # print(f"[StatusRequestWorker.run] Step 10: JSON parsed OK", flush=True)
+                    except Exception as e:
+                        print(f"[StatusRequestWorker.run] Exception parsing JSON: {type(e).__name__}: {e}", flush=True)
+                        error = f"JSON parse error: {e}"
+                        return                   
+                except Exception as e:
+                    print(f"[StatusRequestWorker.run] Outer exception (type: {type(e).__name__}): {e}", flush=True)
+                    error = f"Outer error: {e}"
+            except Exception as e:
+                print(f"[StatusRequestWorker.run] VERY outer exception: {e}", flush=True)
+                error = f"Very outer: {e}"
+        except Exception as e:
+            print(f"[StatusRequestWorker.run] OUTERMOST exception: {e}", flush=True)
+            error = f"Outermost: {e}"
+        finally:
+            # print(f"[StatusRequestWorker.run] Finally block: about to emit signal...", flush=True)
+            try:
+                # print(f"[StatusRequestWorker.run] Emitting with path={self.path}, error={error}", flush=True)
+                self.finished.emit(self.path, payload, error)
+                # print(f"[StatusRequestWorker.run] Signal emitted OK", flush=True)
+            except Exception as e:
+                print(f"[StatusRequestWorker.run] Exception emitting signal: {type(e).__name__}: {e}", flush=True)
+            print(f"[StatusRequestWorker.run] ===== END =====", flush=True)
+
+
+class CasesRequestWorker(QThread):
+    """Worker to fetch cases from FolderMonitor"""
+    finished = pyqtSignal(dict, str)  # (cases_data, error_message)
+
+    def __init__(self):
+        super().__init__()
+        # print(f"[CasesRequestWorker.__init__] Created cases worker", flush=True)
+
+    def run(self):
+        # print(f"[CasesRequestWorker.run] ===== START Fetching Cases =====", flush=True)
+        cases_data = None
+        error = None
+        try:
+            if StagingLogic is None:
+                raise Exception("StagingLogic not available")
+            
+            monitor = StagingLogic.from_config()
+            # print(f"[CasesRequestWorker.run] StagingLogic created", flush=True)
+            
+            cases_data = monitor.get_cases_for_ui()
+            print(f"[CasesRequestWorker.run] Got cases - Today: {len(cases_data.get('today', []))} | Yesterday: {len(cases_data.get('yesterday', []))}", flush=True)
+            
+        except Exception as e:
+            error = str(e)
+            print(f"[CasesRequestWorker.run] ERROR: {error}", flush=True)
+            logger.error(f"Failed to fetch cases: {error}")
+            cases_data = {"today": [], "yesterday": []}
+        finally:
+            # print(f"[CasesRequestWorker.run] ===== END Fetching Cases =====", flush=True)
+            self.finished.emit(cases_data, error)
+
+
+def pil_process_icon(icon_path: Path, size: int = 20) -> QIcon:
+    if not icon_path.exists():
+        return QIcon()
+
+    ext = icon_path.suffix.lower()
+
+    try:
+        if ext in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+            image = Image.open(icon_path)
+            image = image.resize((size, size), Image.Resampling.LANCZOS)
+            return image_to_qicon(image)
+
+        if ext == ".svg":
+            raster = QIcon(str(icon_path)).pixmap(size, size).toImage()
+            if raster.isNull():
+                return QIcon(str(icon_path))
+
+            output_buffer = QBuffer()
+            output_buffer.open(QIODevice.OpenModeFlag.ReadWrite)
+            QPixmap.fromImage(raster).save(output_buffer, "PNG")
+            output = io.BytesIO(bytes(output_buffer.data()))
+            output.seek(0)
+
+            image = Image.open(output)
+            image = image.resize((size, size), Image.Resampling.LANCZOS)
+            return image_to_qicon(image)
+
+        return QIcon(str(icon_path))
+    except Exception:
+        return QIcon(str(icon_path))
+
+
+class NavButton(QPushButton):
+    def __init__(self, text: str, icon: QIcon | None = None, active: bool = False):
+        super().__init__(text)
+        if icon:
+            self.setIcon(icon)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(44)
+        self.set_active(active)
+
+    def set_active(self, active: bool):
+        if active:
+            self.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: #1D4ED8;
+                    color: #E5E7EB;
+                    border: none;
+                    border-radius: 10px;
+                    text-align: left;
+                    padding-left: 14px;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: transparent;
+                    color: #D1D5DB;
+                    border: none;
+                    border-radius: 10px;
+                    text-align: left;
+                    padding-left: 14px;
+                    font-size: 14px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: #1F2937;
+                }
+                """
+            )
+
+
+class StatusIndicator(QFrame):
+    def __init__(self, label: str, online: bool = True):
+        super().__init__()
+        self.setObjectName("StatusIndicator")
+        self.setStyleSheet("#StatusIndicator { background-color: #111827; border-radius: 8px; }")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(6)
+
+        self.dot = QLabel()
+        self.dot.setFixedSize(8, 8)
+        color = "#22C55E" if online else "#EF4444"
+        self.dot.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
+        layout.addWidget(self.dot)
+
+        self.label = QLabel(label)
+        self.label.setStyleSheet("color: #D1D5DB; font-size: 12px; font-weight: 600;")
+        layout.addWidget(self.label)
+
+        self.online = online
+
+    def set_online(self, online: bool):
+        self.online = online
+        color = "#22C55E" if online else "#EF4444"
+        self.dot.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
+
+
+
+class CaseRow(QFrame):
+    def __init__(self, case_data: dict):
+        super().__init__()
+        self.setFixedHeight(50)  # Fixed height prevents expansion when added to layout
+        self.setStyleSheet("QFrame { background-color: #111827; border-radius: 10px; border: none; }")
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(12)
+        print(f"case_data: {case_data}", flush=True)
+
+        self._add_text(row, case_data["id"], 88)
+        self._add_text(row, case_data["name"], 130)
+        self._add_text(row, case_data["scan_type"], 100)
+        self._add_text(row, case_data["pdf_count"], 64)
+        self._add_text(row, case_data["single_dicom_count"], 74)
+        self._add_text(row, case_data["image_count"], 72)
+        self._add_text(row, "Yes" if case_data["staged"] else "No", 120)
+        self._add_text(row, case_data.get("pacs_text", "No"), 150)
+        # row.addWidget(self._status_dot(case_data["staged"], 1))
+        # row.addWidget(self._status_dot(case_data["pacs"], case_data["pacs_text"]), 1)
+
+        action_button = QPushButton("View" if case_data["action"] == "view" else "Retry")
+        action_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        action_button.setFixedHeight(30)
+        action_button.setFixedWidth(72)
+
+        if case_data["action"] == "view":
+            action_button.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: #2563EB;
+                    color: #F9FAFB;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+                QPushButton:hover { background-color: #1D4ED8; }
+                """
+            )
+        else:
+            action_button.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: rgba(239, 68, 68, 0.15);
+                    color: #FCA5A5;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+                QPushButton:hover { background-color: rgba(239, 68, 68, 0.24); }
+                """
+            )
+
+        row.addWidget(action_button)
+
+    def _add_text(self, parent: QHBoxLayout, text: str, width: int):
+        label = QLabel(text)
+        label.setFixedWidth(width)
+        label.setStyleSheet("color: #E5E7EB; font-size: 12px;")
+        parent.addWidget(label)
+
+    def _status_dot(self, status: str, text: str) -> QWidget:
+        colors = {
+            "processing": "#3B82F6",
+            "completed": "#22C55E",
+            "error": "#EF4444",
+        }
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        dot = QLabel()
+        dot.setFixedSize(10, 10)
+        dot.setStyleSheet(f"background-color: {colors.get(status, '#9CA3AF')}; border-radius: 5px;")
+
+        value = QLabel(text)
+        value.setStyleSheet("color: #D1D5DB; font-size: 12px; font-weight: 600;")
+
+        layout.addWidget(dot)
+        layout.addWidget(value)
+        layout.addStretch()
+        return wrapper
+
+
+class DashboardWindow(QMainWindow):
+    def __init__(self):
+        # print("[DashboardWindow] Initializing...")
+        super().__init__()
+        # print("[DashboardWindow] Super init complete")
+        
+        self.setWindowTitle("Dentascan Case Monitor")
+        self.resize(1460, 900)
+        # print("[DashboardWindow] Window properties set")
+
+        root = QWidget()
+        root.setStyleSheet("background-color: #0F172A;")
+        self.setCentralWidget(root)
+        # print("[DashboardWindow] Central widget created")
+
+        main_layout = QHBoxLayout(root)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        # print("[DashboardWindow] Main layout created")
+        
+        # Initialize member variables early (before build methods that set these)
+        self.status_indicators = {}
+        self.service_indicator = None
+        self.ris_indicator = None
+        self.pacs_indicator = None
+        self.current_worker = None  # Keep reference to prevent GC
+        self.cases_worker = None  # Keep reference to cases worker
+        self.today_cases_layout = None  # Will hold today's cases
+        self.yesterday_cases_layout = None  # Will hold yesterday's cases
+        self.thread_pool = QThreadPool.globalInstance()
+        # print("[DashboardWindow] Member variables initialized")
+
+        # print("[DashboardWindow] Building sidebar...")
+        main_layout.addWidget(self.build_sidebar())
+        # print("[DashboardWindow] Sidebar built")
+        
+        self.content_stack = QWidget()
+        self.content_layout = QVBoxLayout(self.content_stack)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.content_stack, 1)
+        # print("[DashboardWindow] Content stack created")
+        
+        # print("[DashboardWindow] Building monitor content...")
+        self.monitor_widget = self.build_monitor_content()
+        # print("[DashboardWindow] Monitor widget built")
+        
+        # print("[DashboardWindow] Building RIS content...")
+        self.ris_widget = self.build_ris_content()
+        # print("[DashboardWindow] RIS widget built")
+        
+        # print("[DashboardWindow] Building PACS content...")
+        self.pacs_widget = self.build_pacs_content()
+        # print("[DashboardWindow] PACS widget built")
+        
+        self.content_layout.addWidget(self.monitor_widget)
+        self.content_layout.addWidget(self.ris_widget)
+        self.content_layout.addWidget(self.pacs_widget)
+        # print("[DashboardWindow] All widgets added to layout")
+        
+        # print("[DashboardWindow] Creating poll timer...")
+        self.poll_timer = QTimer(self)
+        self.poll_timer.timeout.connect(self._poll_status, Qt.ConnectionType.QueuedConnection)
+        self.poll_timer.setSingleShot(False)
+        self.poll_timer.setInterval(2000)
+        # print("[DashboardWindow] Poll timer created and configured")
+        
+        # print("[DashboardWindow] Creating cases poll timer...")
+        self.cases_timer = QTimer(self)
+        self.cases_timer.timeout.connect(self._poll_cases, Qt.ConnectionType.QueuedConnection)
+        self.cases_timer.setSingleShot(False)
+        self.cases_timer.setInterval(3000)  # Poll cases every 3 seconds
+        # print("[DashboardWindow] Cases poll timer created and configured")
+        
+        # print("[DashboardWindow] Scheduling delayed timer start...")
+        QTimer.singleShot(500, self.poll_timer.start)
+        QTimer.singleShot(1000, self.cases_timer.start)  # Start cases polling slightly delayed
+        # print("[DashboardWindow] Delayed timer start scheduled")
+        
+        # print("[DashboardWindow] Showing monitor view...")
+        self.show_monitor()
+        # print("[DashboardWindow] Initialization complete!")
+
+    def build_sidebar(self) -> QWidget:
+        # print("[DashboardWindow.build_sidebar] Building sidebar...")
+        sidebar = QFrame()
+        sidebar.setFixedWidth(250)
+        sidebar.setStyleSheet("background-color: #111827; border-right: 1px solid #1F2937;")
+
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(14, 18, 14, 14)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        logo = QLabel()
+        logo.setFixedSize(42, 42)
+        logo.setStyleSheet("background-color: #2563EB; border-radius: 8px;")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setText("D")
+        logo.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        logo.setStyleSheet("background-color: #2563EB; border-radius: 8px; color: white;")
+
+        title_box = QVBoxLayout()
+        app_title = QLabel("Dentascan")
+        app_title.setStyleSheet("color: #F9FAFB; font-size: 16px; font-weight: 700;")
+        sub = QLabel("Radiology Center")
+        sub.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        title_box.addWidget(app_title)
+        title_box.addWidget(sub)
+
+        top.addWidget(logo)
+        top.addLayout(title_box)
+        top.addStretch()
+        layout.addLayout(top)
+        layout.addSpacing(14)
+
+        home_icon = pil_process_icon(ICON_DIR / "home.svg", 18)
+        settings_icon = pil_process_icon(ICON_DIR / "settings.svg", 18)
+
+        self.nav_buttons = []
+        nav_data = [
+            ("Monitor", home_icon, True),
+            ("RIS", None, False),
+            ("PACS", None, False),
+            ("Settings", settings_icon, False),
+        ]
+
+        for name, icon, is_active in nav_data:
+            button = NavButton(name, icon=icon, active=is_active)
+            button.clicked.connect(lambda checked, b=name: self.activate_nav(b))
+            self.nav_buttons.append(button)
+            layout.addWidget(button)
+
+        layout.addStretch(1)
+
+        profile = QFrame()
+        profile.setStyleSheet("QFrame { background-color: #1F2937; border-radius: 12px; }")
+        profile_layout = QHBoxLayout(profile)
+        profile_layout.setContentsMargins(10, 10, 10, 10)
+        profile_layout.setSpacing(10)
+
+        avatar = QLabel("DR")
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setFixedSize(40, 40)
+        avatar.setStyleSheet("background-color: #374151; color: #E5E7EB; border-radius: 20px; font-weight: 700;")
+
+        profile_text = QVBoxLayout()
+        name = QLabel("Dr. Aris Thorne")
+        role = QLabel("Administrator")
+        name.setStyleSheet("color: #F3F4F6; font-size: 12px; font-weight: 700;")
+        role.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        profile_text.addWidget(name)
+        profile_text.addWidget(role)
+
+        profile_layout.addWidget(avatar)
+        profile_layout.addLayout(profile_text)
+        layout.addWidget(profile)
+
+        # print("[DashboardWindow.build_sidebar] Sidebar built successfully")
+        return sidebar
+
+    def build_monitor_content(self) -> QWidget:
+        # print("[DashboardWindow.build_monitor_content] Building monitor content...")
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 16, 18, 16)
+        content_layout.setSpacing(14)
+
+        header = QFrame()
+        header.setFixedHeight(72)
+        header.setStyleSheet("QFrame { background-color: #111827; border-radius: 12px; border: none; }")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(14, 10, 14, 10)
+
+        search = QLineEdit()
+        search.setPlaceholderText("Search patients or IDs...")
+        search.setFixedWidth(300)
+        search.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 13px;
+                padding: 8px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+
+        status_container = QHBoxLayout()
+        status_container.setSpacing(6)
+        self.service_indicator = StatusIndicator("Service", True)
+        self.ris_indicator = StatusIndicator("RIS", True)
+        self.pacs_indicator = StatusIndicator("PACS", True)
+        # print(f"[build_monitor_content] Indicators created - service: {self.service_indicator}, ris: {self.ris_indicator}, pacs: {self.pacs_indicator}")
+        status_container.addWidget(self.service_indicator)
+        status_container.addWidget(self.ris_indicator)
+        status_container.addWidget(self.pacs_indicator)
+        status_container.addStretch()
+
+        left_header = QHBoxLayout()
+        left_header.addWidget(search)
+
+        header_layout.addLayout(left_header)
+        header_layout.addStretch()
+        header_layout.addLayout(status_container)
+
+        content_layout.addWidget(header)
+
+        section_title = QLabel("Today's Cases")
+        section_title.setStyleSheet("color: #E5E7EB; font-size: 16px; font-weight: 700;")
+        content_layout.addWidget(section_title)
+
+        header_row = self.case_header()
+        content_layout.addWidget(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            """
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background: #111827;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #374151;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            """
+        )
+
+        rows_host = QWidget()
+        rows_layout = QVBoxLayout(rows_host)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(8)
+        self.today_cases_layout = rows_layout  # Store for dynamic updates
+
+        rows = [
+            {
+                "id": "Unknown",
+                "name": "Loading...",
+                "scan_type": "CBCT",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "Unknown",
+                # "staged_pct": "",
+                "pacs": "Unknown",
+                # "pacs_text": "Loading...",
+                "action": "view",
+            },
+        ]
+
+        for case in rows:
+            rows_layout.addWidget(CaseRow(case))
+
+        rows_layout.addStretch(1)
+        scroll.setWidget(rows_host)
+        scroll.setMinimumHeight(240)
+        content_layout.addWidget(scroll)
+
+        yesterday_title = QLabel("Yesterday's Cases")
+        yesterday_title.setStyleSheet("color: #9CA3AF; font-size: 16px; font-weight: 700;")
+        content_layout.addWidget(yesterday_title)
+
+        yesterday_header_row = self.case_header()
+        content_layout.addWidget(yesterday_header_row)
+
+        yesterday_scroll = QScrollArea()
+        yesterday_scroll.setWidgetResizable(True)
+        yesterday_scroll.setStyleSheet(
+            """
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background: #111827;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #374151;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            """
+        )
+
+        yesterday_host = QWidget()
+        yesterday_layout = QVBoxLayout(yesterday_host)
+        yesterday_layout.setContentsMargins(0, 0, 0, 0)
+        yesterday_layout.setSpacing(8)
+        self.yesterday_cases_layout = yesterday_layout  # Store for dynamic updates
+
+        yesterday_rows = [
+            {
+                "id": "Unknown",
+                "name": "Loading...",
+                "scan_type": "CBCT",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "Unknown",
+                # "staged_pct": "",
+                "pacs": "Unknown",
+                # "pacs_text": "Loading...",
+                "action": "view",
+            },
+        ]
+
+        for case in yesterday_rows:
+            yesterday_layout.addWidget(CaseRow(case))
+
+        yesterday_layout.addStretch(1)
+        yesterday_scroll.setWidget(yesterday_host)
+        yesterday_scroll.setMinimumHeight(170)
+        content_layout.addWidget(yesterday_scroll, 1)
+
+        return content
+
+    def case_header(self) -> QWidget:
+        frame = QFrame()
+        frame.setStyleSheet("QFrame { background-color: #1F2937; border-radius: 10px; border: none; }")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        labels = [
+            ("ID", 88),
+            ("Name", 130),
+            ("Scan Type", 100),
+            ("PDFs", 64),
+            ("DICOMs", 74),
+            ("Images", 72),
+            ("Staged", 120),
+            ("PACs Uploaded", 150),
+            ("Action", 70),
+        ]
+
+        for text, width in labels:
+            item = QLabel(text)
+            item.setFixedWidth(width)
+            item.setStyleSheet("color: #9CA3AF; font-size: 11px; font-weight: 700;")
+            layout.addWidget(item)
+
+        return frame
+
+    def _poll_status(self):
+        # print("[DashboardWindow._poll_status] Polling status...", flush=True)
+        try:
+            # print("[DashboardWindow._poll_status] Creating StatusRequestWorker...", flush=True)
+            self.current_worker = StatusRequestWorker("GET", "/api/status")
+            # print("[DashboardWindow._poll_status] Worker created, about to connect signal...", flush=True)
+            safe_flush()
+            self.current_worker.finished.connect(self._handle_status_response, Qt.ConnectionType.QueuedConnection)
+            # print("[DashboardWindow._poll_status] Signal connected, starting worker thread...", flush=True)
+            self.current_worker.start()
+            # print("[DashboardWindow._poll_status] Worker thread started", flush=True)
+        except Exception as e:
+            print(f"[DashboardWindow._poll_status] Exception in polling: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            safe_flush()
+    
+    
+    def _handle_status_response(self, path: str, payload: dict, error: str):
+        # print(f"[_handle_status_response] Processing response - error={error}, payload exists={payload is not None}", flush=True)
+        if error or not payload:
+            print(f"[_handle_status_response] Error state - setting all indicators offline", flush=True)
+            if self.service_indicator:
+                self.service_indicator.set_online(False)
+            if self.ris_indicator:
+                self.ris_indicator.set_online(False)
+            if self.pacs_indicator:
+                self.pacs_indicator.set_online(False)
+            return
+        
+        try:
+            service_state = payload.get("state", "").lower()
+            service_online = service_state == "running"
+            # print(f"[_handle_status_response] Service state from API: {service_state}, updating indicator to: {service_online}", flush=True)
+            
+            # Update indicators based on API response
+            if self.service_indicator:
+                self.service_indicator.set_online(service_online)
+                # print(f"[_handle_status_response] [OK] Service indicator updated", flush=True)
+            else:
+                print(f"[_handle_status_response] [WARN] service_indicator is None!", flush=True)
+                
+            if self.ris_indicator:
+                self.ris_indicator.set_online(True)  # Assume RIS is online if we got a response
+            if self.pacs_indicator:
+                self.pacs_indicator.set_online(True)  # Assume PACS is online if we got a response
+        except Exception as e:
+            print(f"[_handle_status_response] Exception: {e}", flush=True)
+    
+    def _format_pacs_progress(self, progress: dict) -> str:
+        """Format PACS upload progress for display"""
+        total = progress.get("total_files", 0)
+        uploaded = progress.get("uploaded_files", 0)
+        percent = progress.get("current_percent", 0)
+        is_uploading = progress.get("is_uploading", False)
+        is_complete = progress.get("is_complete", False)
+        
+        if total == 0:
+            return "No files"
+        
+        if is_complete:
+            return f"{total}/{total} - 100%"
+        
+        if is_uploading:
+            # During active upload, show progress percentage
+            return f"Uploading... {percent}%"
+        
+        # Not uploading - show uploaded/total count
+        if uploaded > 0 or total > 0:
+            return f"{uploaded}/{total}"
+        
+        return "Not uploaded"
+    
+    def _poll_cases(self):
+        """Poll for cases from FolderMonitor"""
+        # print("[DashboardWindow._poll_cases] Polling cases...", flush=True)
+        try:
+            if self.cases_worker is not None:
+                # print("[DashboardWindow._poll_cases] Previous worker still running, skipping", flush=True)
+                return
+            
+            # print("[DashboardWindow._poll_cases] Creating CasesRequestWorker...", flush=True)
+            self.cases_worker = CasesRequestWorker()
+            # print("[DashboardWindow._poll_cases] Worker created, connecting signal...", flush=True)
+            self.cases_worker.finished.connect(self._handle_cases_response, Qt.ConnectionType.QueuedConnection)
+            # print("[DashboardWindow._poll_cases] Signal connected, starting worker...", flush=True)
+            self.cases_worker.start()
+            # print("[DashboardWindow._poll_cases] Worker thread started", flush=True)
+        except Exception as e:
+            print(f"[DashboardWindow._poll_cases] Exception: {e}", flush=True)
+            logger.error(f"Error polling cases: {e}")
+    
+    def _handle_cases_response(self, cases_data: dict, error: str):
+        """Handle cases response and update the UI"""
+        # print(f"[_handle_cases_response] Processing cases response - error={error}", flush=True)
+        
+        try:
+            if error:
+                print(f"[_handle_cases_response] Error: {error}", flush=True)
+                return
+            
+            if not cases_data:
+                print(f"[_handle_cases_response] No cases data", flush=True)
+                return
+            
+            # Clear existing layouts
+            while self.today_cases_layout.count() > 0:
+                item = self.today_cases_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            
+            while self.yesterday_cases_layout.count() > 0:
+                item = self.yesterday_cases_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            
+            # Populate today's cases
+            today_cases = cases_data.get("today", [])
+            print(f"[_handle_cases_response] Found {len(today_cases)} today's cases", flush=True)
+            
+            if today_cases:
+                for case_data in today_cases:
+                    try:
+                        # Format PACS upload progress
+                        pacs_progress = case_data.get("pacs_progress", {})
+                        pacs_text = self._format_pacs_progress(pacs_progress)
+                        # print(f"======================================")
+                        # print(f"pacs_progress = {pacs_progress}")
+                        
+                        case_row = {
+                            "id": case_data.get("case_id", "Unknown") if case_data.get("case_id") is not None else "Unknown",
+                            "name": case_data.get("name", "Unknown"),
+                            "scan_type": "CBCT",  # Placeholder as requested
+                            "pdf_count": str(case_data.get("pdf_count", "Unknown")),
+                            "single_dicom_count": str(case_data.get("single_dicom_count", "Unknown")),
+                            "image_count": str(case_data.get("image_count", "Unknown")),
+                            "staged": case_data.get("is_staged", False),
+                            "pacs": case_data.get("is_uploaded", False),
+                            # "pacs_text": pacs_text,
+                            "action": "view",
+                        }
+                        print(f"[_handle_cases_response] Adding today's case: {case_row['name']}", flush=True)
+                        self.today_cases_layout.insertWidget(0, CaseRow(case_row))
+                    except Exception as e:
+                        print(f"[_handle_cases_response] Error adding case row: {e}", flush=True)
+            
+            # Re-add stretch to push cases to top
+            self.today_cases_layout.addStretch(1)
+            print(f"[_handle_cases_response] No today's cases found" if not today_cases else "")
+            
+            # Populate yesterday's cases
+            yesterday_cases = cases_data.get("yesterday", [])
+            print(f"[_handle_cases_response] Found {len(yesterday_cases)} yesterday's cases", flush=True)
+            
+            if yesterday_cases:
+                for case_data in yesterday_cases:
+                    try:
+                        # Format PACS upload progress
+                        pacs_progress = case_data.get("pacs_progress", {})
+                        pacs_text = self._format_pacs_progress(pacs_progress)
+                        print(f"pacs_text = {pacs_text} for case {case_data.get('name', 'Unknown')}", flush=True)
+                        case_row = {
+                            "id": case_data.get("case_id", "Unknown") if case_data.get("case_id") is not None else "Unknown",
+                            "name": case_data.get("name", "Unknown"),
+                            "scan_type": "CBCT",  # Placeholder as requested
+                            "pdf_count": str(case_data.get("pdf_count", "Unknown")),
+                            "single_dicom_count": str(case_data.get("single_dicom_count", "Unknown")),
+                            "image_count": str(case_data.get("image_count", "Unknown")),
+                            "staged": case_data.get("is_staged", False),
+                            "pacs": case_data.get("is_uploaded", False),
+                            # "pacs_text": pacs_text,
+                            "action": "view",
+                        }
+                        print(f"[_handle_cases_response] Adding yesterday's case: {case_row['name']}", flush=True)
+                        self.yesterday_cases_layout.insertWidget(0, CaseRow(case_row))
+                    except Exception as e:
+                        print(f"[_handle_cases_response] Error adding case row: {e}", flush=True)
+            
+            # Re-add stretch to push cases to top
+            self.yesterday_cases_layout.addStretch(1)
+            print(f"[_handle_cases_response] No yesterday's cases found" if not yesterday_cases else "")
+            
+            # print(f"[_handle_cases_response] Cases update complete", flush=True)
+            
+        except Exception as e:
+            print(f"[_handle_cases_response] Exception: {e}", flush=True)
+            logger.error(f"Error handling cases response: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.cases_worker = None
+    
+    def activate_nav(self, nav_name: str):
+        # print(f"[DashboardWindow.activate_nav] Navigation requested: {nav_name}")
+        for button in self.nav_buttons:
+            button.set_active(button.text() == nav_name)
+        
+        if nav_name == "Monitor":
+            # print(f"[DashboardWindow.activate_nav] Showing Monitor")
+            self.show_monitor()
+        elif nav_name == "RIS":
+            # print(f"[DashboardWindow.activate_nav] Showing RIS")
+            self.show_ris()
+        elif nav_name == "PACS":
+            # print(f"[DashboardWindow.activate_nav] Showing PACS")
+            self.show_pacs()
+    
+    def show_monitor(self):
+        # print("[show_monitor] START")
+        safe_flush()
+        try:
+            # print("[show_monitor] Showing monitor widget...")
+            safe_flush()
+            self.monitor_widget.show()
+            # print("[show_monitor] Monitor widget shown")
+            safe_flush()
+            
+            # print("[show_monitor] Hiding RIS widget...")
+            safe_flush()
+            self.ris_widget.hide()
+            # print("[show_monitor] RIS widget hidden")
+            safe_flush()
+            
+            # print("[show_monitor] Hiding PACS widget...")
+            safe_flush()
+            self.pacs_widget.hide()
+            # print("[show_monitor] PACS widget hidden")
+            safe_flush()
+        except Exception as e:
+            print(f"[show_monitor] Exception: {type(e).__name__}: {e}")
+            safe_flush()
+            import traceback
+            traceback.print_exc()
+            safe_flush()
+        # print("[show_monitor] END")
+        safe_flush()
+    
+    def show_ris(self):
+        print("[show_ris] START")
+        safe_flush()
+        try:
+            self.monitor_widget.hide()
+            self.ris_widget.show()
+            self.pacs_widget.hide()
+        except Exception as e:
+            print(f"[show_ris] Exception: {e}")
+            safe_flush()
+        print("[show_ris] END")
+        safe_flush()
+    
+    def show_pacs(self):
+        print("[show_pacs] START")
+        safe_flush()
+        try:
+            self.monitor_widget.hide()
+            self.ris_widget.hide()
+            self.pacs_widget.show()
+        except Exception as e:
+            print(f"[show_pacs] Exception: {e}")
+            safe_flush()
+        print("[show_pacs] END")
+        safe_flush()
+    
+    def build_ris_content(self) -> QWidget:
+        print("[DashboardWindow.build_ris_content] Building RIS content...")
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 16, 18, 16)
+        content_layout.setSpacing(12)
+
+        filter_frame = QFrame()
+        filter_frame.setFixedHeight(60)
+        filter_frame.setStyleSheet("QFrame { background-color: #111827; border-radius: 12px; border: none; }")
+        filter_layout = QHBoxLayout(filter_frame)
+        filter_layout.setContentsMargins(14, 10, 14, 10)
+        filter_layout.setSpacing(10)
+
+        search = QLineEdit()
+        search.setPlaceholderText("Search patient ID, name...")
+        search.setFixedWidth(250)
+        search.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(search)
+
+        date_filter = QLineEdit()
+        date_filter.setPlaceholderText("Date range...")
+        date_filter.setFixedWidth(180)
+        date_filter.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(date_filter)
+
+        status_filter = QLineEdit()
+        status_filter.setPlaceholderText("Status...")
+        status_filter.setFixedWidth(150)
+        status_filter.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(status_filter)
+        filter_layout.addStretch()
+
+        content_layout.addWidget(filter_frame)
+
+        header_row = self.case_header()
+        content_layout.addWidget(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            """
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background: #111827;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #374151;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            """
+        )
+
+        rows_host = QWidget()
+        rows_layout = QVBoxLayout(rows_host)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(8)
+
+        ris_rows = [
+            {
+                "id": "PX-9001",
+                "name": "Ahmed Ali",
+                "scan_type": "CBCT",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "completed",
+                # "staged_pct": "100%",
+                "pacs": "completed",
+                # "pacs_text": "Completed",
+                "action": "view",
+            },
+            {
+                "id": "PX-9002",
+                "name": "Fatima Hassan",
+                "scan_type": "CT SCAN",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "processing",
+                # "staged_pct": "45%",
+                "pacs": "processing",
+                # "pacs_text": "32%",
+                "action": "view",
+            },
+        ]
+
+        for case in ris_rows:
+            rows_layout.addWidget(CaseRow(case))
+
+        rows_layout.addStretch(1)
+        scroll.setWidget(rows_host)
+        content_layout.addWidget(scroll, 1)
+        print("[DashboardWindow.build_ris_content] RIS content built successfully")
+
+        return content
+
+    def build_pacs_content(self) -> QWidget:
+        print("[DashboardWindow.build_pacs_content] Building PACS content...")
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 16, 18, 16)
+        content_layout.setSpacing(12)
+
+        filter_frame = QFrame()
+        filter_frame.setFixedHeight(60)
+        filter_frame.setStyleSheet("QFrame { background-color: #111827; border-radius: 12px; border: none; }")
+        filter_layout = QHBoxLayout(filter_frame)
+        filter_layout.setContentsMargins(14, 10, 14, 10)
+        filter_layout.setSpacing(10)
+
+        search = QLineEdit()
+        search.setPlaceholderText("Search accession number, patient...")
+        search.setFixedWidth(280)
+        search.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(search)
+
+        modality_filter = QLineEdit()
+        modality_filter.setPlaceholderText("Modality...")
+        modality_filter.setFixedWidth(150)
+        modality_filter.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(modality_filter)
+
+        upload_status = QLineEdit()
+        upload_status.setPlaceholderText("Upload status...")
+        upload_status.setFixedWidth(160)
+        upload_status.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #1F2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                color: #E5E7EB;
+                font-size: 12px;
+                padding: 6px 10px;
+            }
+            QLineEdit:focus { border: 1px solid #2563EB; }
+            """
+        )
+        filter_layout.addWidget(upload_status)
+        filter_layout.addStretch()
+
+        content_layout.addWidget(filter_frame)
+
+        header_row = self.case_header()
+        content_layout.addWidget(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            """
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background: #111827;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #374151;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            """
+        )
+
+        rows_host = QWidget()
+        rows_layout = QVBoxLayout(rows_host)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(8)
+
+        pacs_rows = [
+            {
+                "id": "ACC-5001",
+                "name": "Mohammed Karim",
+                "scan_type": "CT SCAN",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "completed",
+                # "staged_pct": "100%",
+                "pacs": "completed",
+                # "pacs_text": "Completed",
+                "action": "view",
+            },
+            {
+                "id": "ACC-5002",
+                "name": "Sara Jamal",
+                "scan_type": "MRI",
+                "pdf_count": "Unknown",
+                "single_dicom_count": "Unknown",
+                "image_count": "Unknown",
+                "staged": "completed",
+                # "staged_pct": "100%",
+                "pacs": "processing",
+                # "pacs_text": "89%",
+                "action": "view",
+            },
+        ]
+
+        for case in pacs_rows:
+            rows_layout.addWidget(CaseRow(case))
+
+        rows_layout.addStretch(1)
+        scroll.setWidget(rows_host)
+        content_layout.addWidget(scroll, 1)
+        print("[DashboardWindow.build_pacs_content] PACS content built successfully")
+
+        return content
+
+
+def main():
+    try:
+        logger.info("[MAIN] Starting application...")
+        logger.info("[MAIN] Creating QApplication...")
+        app = QApplication(sys.argv)
+        logger.info("[MAIN] QApplication created successfully")
+        
+        logger.info("[MAIN] Setting font...")
+        app.setFont(QFont("Segoe UI", 10))
+        logger.info("[MAIN] Font set successfully")
+
+        logger.info("[MAIN] Setting theme...")
+        if setTheme and Theme:
+            setTheme(Theme.DARK)
+            logger.info("[MAIN] Fluent theme applied")
+        else:
+            logger.info("[MAIN] Fluent theme not available, using default")
+
+        logger.info("[MAIN] Creating DashboardWindow...")
+        window = DashboardWindow()
+        logger.info("[MAIN] DashboardWindow created successfully")
+        
+        logger.info("[MAIN] Showing window...")
+        window.show()
+        logger.info("[MAIN] Window shown successfully")
+
+        logger.info("[MAIN] Starting event loop...")
+        sys.exit(app.exec())
+    except Exception as e:
+        import traceback
+        logger.error(f"[MAIN] FATAL ERROR: {e}")
+        logger.error(traceback.format_exc())
+        print(f"FATAL ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

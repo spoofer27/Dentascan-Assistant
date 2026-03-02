@@ -1,4 +1,6 @@
 PyQt5>=5.15,<6
+PyQt6>=6.10,<7
+PyQt6-Fluent-Widgets>=1.11
 pywin32>=306
 pydicom>=2.4
 Pillow>=10

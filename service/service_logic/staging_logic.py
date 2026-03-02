@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import os
+import re
 import sys
 import shutil
 import threading
@@ -393,6 +394,7 @@ class StagingLogic:
                         orthanc_folder = case_staging_folder / "Orthanc"
                         orthanc_folder.mkdir(parents=True, exist_ok=True)
                         case_labels = []
+                        case_id = None
 
                         try: # main checking
                             stack = [case]
@@ -411,6 +413,16 @@ class StagingLogic:
                                                         romexis = "ROMEXIS" in str(impl_version).upper() if not romexis else romexis
                                                         number_of_frames = getattr(ds, "NumberOfFrames", None)
                                                         modality = getattr(ds, "Modality", None)
+                                                        patient_name = str(ds.get("PatientName", "")).strip()
+                                                        patient_id = str(ds.get("PatientID", "")).strip()
+                                                        
+                                                        if case_id is None: # try to get case id from patient name or patient id
+                                                            id_in_patient_name = re.search(r"\d+", patient_name)
+                                                            if id_in_patient_name:
+                                                                case_id = id_in_patient_name.group(0)
+                                                            else:
+                                                                case_id = patient_id if patient_id else None
+
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
 
@@ -425,18 +437,17 @@ class StagingLogic:
                                                                     shutil.copy2(file, dest_path)
                                                             except Exception as exc: # error copying
                                                                 self._post_ui_log(f"Failed to copy DICOM file {file.name} to dicoms for case {case.name}: {exc}")
-
+                                                            
                                                             # orthanc staging...............
                                                             out_path = orthanc_folder / file.name # orthanc staging path
                                                             if out_path.exists(): # check item exists
-                                                                continue # skip
+                                                                pass # skip
                                                             if not getattr(ds, "file_meta", None): # ensure file_meta exists
                                                                 full_ds.file_meta = FileMetaDataset()
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
-
                                                             if int(number_of_frames) > 1:  # single dicom with multiple frames
                                                                 single_dicom_count += 1 # count
                                                                 single_dicom_files.append(file) # add
@@ -469,6 +480,15 @@ class StagingLogic:
                                                     number_of_frames = getattr(ds, "NumberOfFrames", None)
                                                     modality = getattr(ds, "Modality", None)
                                                     study_info = self._extract_study_info(ds) if study_info is None else study_info
+                                                    patient_name = str(ds.get("PatientName", "")).strip()
+                                                    patient_id = str(ds.get("PatientID", "")).strip()
+                                                    
+                                                    if case_id is None: # try to get case id from patient name or patient id
+                                                        id_in_patient_name = re.search(r"\d+", patient_name)
+                                                        if id_in_patient_name:
+                                                            case_id = id_in_patient_name.group(0)
+                                                        else:
+                                                            case_id = patient_id if patient_id else None
 
                                                     if not number_of_frames: # number_of_frames doesn't exist, stage all dicoms
                                                         try: # copy dicom to staging dicom folder
@@ -617,6 +637,7 @@ class StagingLogic:
             case_labels = list(dict.fromkeys(case_labels))  # dedupe, keep order
 
             case_info = {
+                "case_id": case_id,
                 "name": case.name, 
                 "date": case_date, 
                 "time": case_time,
@@ -638,6 +659,7 @@ class StagingLogic:
             self.write_case(case_info, case_info_path)
 
             cases.append({
+                "case_id": case_id,
                 "name": case.name, 
                 "date": case_date, 
                 "time": case_time,
@@ -721,6 +743,7 @@ class StagingLogic:
                         orthanc_folder = case_staging_folder / "Orthanc"
                         orthanc_folder.mkdir(parents=True, exist_ok=True)
                         case_labels = []
+                        case_id = None
 
                         try: # main checking
                             stack = [case]
@@ -739,6 +762,16 @@ class StagingLogic:
                                                         romexis = "ROMEXIS" in str(impl_version).upper() if not romexis else romexis
                                                         number_of_frames = getattr(ds, "NumberOfFrames", None)
                                                         modality = getattr(ds, "Modality", None)
+                                                        patient_name = str(ds.get("PatientName", "")).strip()
+                                                        patient_id = str(ds.get("PatientID", "")).strip()
+                                                        
+                                                        if case_id is None: # try to get case id from patient name or patient id
+                                                            id_in_patient_name = re.search(r"\d+", patient_name)
+                                                            if id_in_patient_name:
+                                                                case_id = id_in_patient_name.group(0)
+                                                            else:
+                                                                case_id = patient_id if patient_id else None
+
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
 
@@ -757,7 +790,7 @@ class StagingLogic:
                                                             # orthanc staging...............
                                                             out_path = orthanc_folder / file.name # orthanc staging path
                                                             if out_path.exists(): # check item exists
-                                                                continue # skip
+                                                                pass # skip
                                                             if not getattr(ds, "file_meta", None): # ensure file_meta exists
                                                                 full_ds.file_meta = FileMetaDataset()
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
@@ -796,6 +829,16 @@ class StagingLogic:
                                                     romexis = "ROMEXIS" in str(impl_version).upper() if not romexis else romexis
                                                     number_of_frames = getattr(ds, "NumberOfFrames", None)
                                                     modality = getattr(ds, "Modality", None)
+                                                    patient_name = str(ds.get("PatientName", "")).strip()
+                                                    patient_id = str(ds.get("PatientID", "")).strip()
+                                                    
+                                                    if case_id is None: # try to get case id from patient name or patient id
+                                                        id_in_patient_name = re.search(r"\d+", patient_name)
+                                                        if id_in_patient_name:
+                                                            case_id = id_in_patient_name.group(0)
+                                                        else:
+                                                            case_id = patient_id if patient_id else None
+
                                                     study_info = self._extract_study_info(ds) if study_info is None else study_info
 
                                                     if not number_of_frames: # number_of_frames doesn't exist, stage all dicoms
@@ -946,6 +989,7 @@ class StagingLogic:
 
 
             processed_case_info = {
+                "case_id": case_id,
                 "name": case.name, 
                 "date": case_date, 
                 "time": case_time,
@@ -967,6 +1011,7 @@ class StagingLogic:
             self.write_case(processed_case_info, processed_case_info_path)
 
             processed_cases.append({
+                "case_id": case_id,
                 "name": case.name, 
                 "date": case_date, 
                 "time": case_time,
@@ -989,6 +1034,15 @@ class StagingLogic:
             self._post_ui_log(f"Yesterday processing: {len(processed_cases)} case(s) processed", source="FolderMonitor")
         
         return len(processed_cases), processed_cases
+
+    def get_cases_for_ui(self) -> dict:
+        today_count, today_cases = self.find_cases()
+        yesterday_count, yesterday_cases = self.find_cases()
+        
+        return {
+            "today": today_cases,
+            "yesterday": yesterday_cases
+        }
 
 def _run_console_debug(poll_seconds: int = 5):
     stop_event = threading.Event()
