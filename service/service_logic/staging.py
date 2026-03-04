@@ -80,97 +80,98 @@ def main(stop_event):
                 try:                    
                     # if monitor.ris_start_login() is not None:
                     # _post_ui_log("trying find_cases()...", source="ServiceLog")
-                    case_count, cases = monitor.find_cases()
-                    now = time.localtime()
-                    date_str = time.strftime("%d-%m-%Y", now)
-                    hour = time.strftime("%I", now).lstrip("0") or "12"
-                    minute = time.strftime("%M", now)
-                    suffix = time.strftime("%p", now).lower()
-                    header_time = f"{hour}.{minute}{suffix}"
-                    logger.info("%s %s - Found %s Cases", date_str, header_time, case_count)
-                    _post_ui_log(f"{date_str} {header_time} - Found {case_count} Cases", source="ServiceLog")
-                    for idx, case in enumerate(cases, start=1):
-                        name = case.get("name", "")
-                        case_date = case.get("date", "")
-                        case_time = case.get("time", "")
-                        case_has_pdf = case.get("has_pdf", False)
-                        case_pdf_count = case.get("pdf_count", 0)
-                        case_has_images = case.get("has_images", False)
-                        case_image_count = case.get("image_count", 0)
-                        case_has_single_dicom = case.get("has_single_dicom", False)
-                        case_single_dicom_count = case.get("single_dicom_count", 0)
-                        case_has_multiple_dicom = case.get("has_multiple_dicom", False)
-                        case_multiple_dicom_count = case.get("multiple_dicom_count", 0)
-                        case_has_project = case.get("has_project", False)
-                        case_project_count = case.get("project_count", 0)
-                        case_romexis = case.get("romexis", False)
-                        logger.info(
-                            "    %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
-                            idx,
-                            name,
-                            case_date,
-                            case_time,
-                            case_pdf_count,
-                            case_image_count,
-                            case_single_dicom_count,
-                            case_multiple_dicom_count,
-                            case_project_count,
-                            case_romexis,
-                        )
-                        _post_ui_log(f"     {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
+                    if monitor.find_cases is not None:
+                        case_count, cases = monitor.find_cases()
+                        now = time.localtime()
+                        date_str = time.strftime("%d-%m-%Y", now)
+                        hour = time.strftime("%I", now).lstrip("0") or "12"
+                        minute = time.strftime("%M", now)
+                        suffix = time.strftime("%p", now).lower()
+                        header_time = f"{hour}.{minute}{suffix}"
+                        logger.info("%s %s - Found %s Cases", date_str, header_time, case_count)
+                        _post_ui_log(f"{date_str} {header_time} - Found {case_count} Cases", source="ServiceLog")
+                        for idx, case in enumerate(cases, start=1):
+                            name = case.get("name", "")
+                            case_date = case.get("date", "")
+                            case_time = case.get("time", "")
+                            case_has_pdf = case.get("has_pdf", False)
+                            case_pdf_count = case.get("pdf_count", 0)
+                            case_has_images = case.get("has_images", False)
+                            case_image_count = case.get("image_count", 0)
+                            case_has_single_dicom = case.get("has_single_dicom", False)
+                            case_single_dicom_count = case.get("single_dicom_count", 0)
+                            case_has_multiple_dicom = case.get("has_multiple_dicom", False)
+                            case_multiple_dicom_count = case.get("multiple_dicom_count", 0)
+                            case_has_project = case.get("has_project", False)
+                            case_project_count = case.get("project_count", 0)
+                            case_romexis = case.get("romexis", False)
+                            logger.info(
+                                "    %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
+                                idx,
+                                name,
+                                case_date,
+                                case_time,
+                                case_pdf_count,
+                                case_image_count,
+                                case_single_dicom_count,
+                                case_multiple_dicom_count,
+                                case_project_count,
+                                case_romexis,
+                            )
+                            _post_ui_log(f"     {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="")
 
-                    # Check yesterday's cases every 30 seconds (every 6 iterations)
-                    yesterday_check_counter += 1 # counnt to 6 loops (30s) to check yesterday's cases
-                    if yesterday_check_counter >= 2: # reset counter and check yesterday's cases
-                            yesterday_check_counter = 0
-                            try:
-                                yesterday_count, yesterday_cases = monitor.find_yesterday_cases()
-                                if yesterday_count > 0:
-                                    
-                                    now = time.localtime()
-                                    date_str = time.strftime("%d-%m-%Y", now)
-                                    hour = time.strftime("%I", now).lstrip("0") or "12"
-                                    minute = time.strftime("%M", now)
-                                    suffix = time.strftime("%p", now).lower()
-                                    header_time = f"{hour}.{minute}{suffix}"
-                                    logger.info("Yesterday recovery: processed %s case(s)", yesterday_count)
-                                    _post_ui_log(f"Yesterday recovery: processed {yesterday_count} case(s)", source="ServiceLog")
-                                    logger.info("%s %s - Found %s Cases", date_str, header_time, yesterday_count)
-                                    _post_ui_log(f"{date_str} {header_time} - Found {yesterday_count} Cases", source="ServiceLog")
-                                    for idx, case in enumerate(yesterday_cases, start=1):
-                                        name = case.get("name", "")
-                                        case_date = case.get("date", "")
-                                        case_time = case.get("time", "")
-                                        case_has_pdf = case.get("has_pdf", False)
-                                        case_pdf_count = case.get("pdf_count", 0)
-                                        case_has_images = case.get("has_images", False)
-                                        case_image_count = case.get("image_count", 0)
-                                        case_has_single_dicom = case.get("has_single_dicom", False)
-                                        case_single_dicom_count = case.get("single_dicom_count", 0)
-                                        case_has_multiple_dicom = case.get("has_multiple_dicom", False)
-                                        case_multiple_dicom_count = case.get("multiple_dicom_count", 0)
-                                        case_has_project = case.get("has_project", False)
-                                        case_project_count = case.get("project_count", 0)
-                                        case_romexis = case.get("romexis", False)
-                                        logger.info(
-                                            "  %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
-                                            idx,
-                                            name,
-                                            case_date,
-                                            case_time,
-                                            case_pdf_count,
-                                            case_image_count,
-                                            case_single_dicom_count,
-                                            case_multiple_dicom_count,
-                                            case_project_count,
-                                            case_romexis,
-                                        )
-                                        _post_ui_log(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
-                            except Exception as exc:
-                                _post_ui_log(f"Yesterday processing failed: {exc}", source="ServiceLog", color="red")
-                    # else:
-                    #     _post_ui_log(f"monitor.ris_start_login() : {monitor.ris_start_login()}")
-                    #     _post_ui_log("RIS module unavailable; skipping RIS login and case retrieval", source="ServiceLog") 
+                        # Check yesterday's cases every 30 seconds (every 6 iterations)
+                        yesterday_check_counter += 1 # counnt to 6 loops (30s) to check yesterday's cases
+                        if yesterday_check_counter >= 2: # reset counter and check yesterday's cases
+                                yesterday_check_counter = 0
+                                try:
+                                    if monitor.find_yesterday_cases is not None:
+                                        yesterday_count, yesterday_cases = monitor.find_yesterday_cases()
+                                        if yesterday_count > 0:
+                                            now = time.localtime()
+                                            date_str = time.strftime("%d-%m-%Y", now)
+                                            hour = time.strftime("%I", now).lstrip("0") or "12"
+                                            minute = time.strftime("%M", now)
+                                            suffix = time.strftime("%p", now).lower()
+                                            header_time = f"{hour}.{minute}{suffix}"
+                                            logger.info("Yesterday recovery: processed %s case(s)", yesterday_count)
+                                            _post_ui_log(f"Yesterday recovery: processed {yesterday_count} case(s)", source="ServiceLog")
+                                            logger.info("%s %s - Found %s Cases", date_str, header_time, yesterday_count)
+                                            _post_ui_log(f"{date_str} {header_time} - Found {yesterday_count} Cases", source="ServiceLog")
+                                            for idx, case in enumerate(yesterday_cases, start=1):
+                                                name = case.get("name", "")
+                                                case_date = case.get("date", "")
+                                                case_time = case.get("time", "")
+                                                case_has_pdf = case.get("has_pdf", False)
+                                                case_pdf_count = case.get("pdf_count", 0)
+                                                case_has_images = case.get("has_images", False)
+                                                case_image_count = case.get("image_count", 0)
+                                                case_has_single_dicom = case.get("has_single_dicom", False)
+                                                case_single_dicom_count = case.get("single_dicom_count", 0)
+                                                case_has_multiple_dicom = case.get("has_multiple_dicom", False)
+                                                case_multiple_dicom_count = case.get("multiple_dicom_count", 0)
+                                                case_has_project = case.get("has_project", False)
+                                                case_project_count = case.get("project_count", 0)
+                                                case_romexis = case.get("romexis", False)
+                                                logger.info(
+                                                    "  %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
+                                                    idx,
+                                                    name,
+                                                    case_date,
+                                                    case_time,
+                                                    case_pdf_count,
+                                                    case_image_count,
+                                                    case_single_dicom_count,
+                                                    case_multiple_dicom_count,
+                                                    case_project_count,
+                                                    case_romexis,
+                                                )
+                                                _post_ui_log(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="")
+                                except Exception as exc:
+                                    _post_ui_log(f"Yesterday processing failed: {exc}", source="ServiceLog", color="red")
+                        # else:
+                        #     _post_ui_log(f"monitor.ris_start_login() : {monitor.ris_start_login()}")
+                        #     _post_ui_log("RIS module unavailable; skipping RIS login and case retrieval", source="ServiceLog") 
                 except Exception as exc:
                     logger.exception("Error in staging loop")
                     servicemanager.LogErrorMsg(f"Error in staging loop: {exc}")

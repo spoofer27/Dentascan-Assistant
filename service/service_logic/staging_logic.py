@@ -481,7 +481,8 @@ class StagingLogic:
                                                                 exam = ris.get("exam")
                                                                 ref_doc = ris.get("ref_doc")
                                                             else:
-                                                                return None
+                                                                self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
+                                                                continue
                                                                                                                     
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
@@ -561,7 +562,8 @@ class StagingLogic:
                                                             exam = ris.get("exam", None)
                                                             ref_doc = ris.get("ref_doc", None)
                                                         else:
-                                                            return None
+                                                            self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
+                                                            continue
 
                                                     if not number_of_frames: # number_of_frames doesn't exist, stage all dicoms
                                                         try: # copy dicom to staging dicom folder
@@ -751,6 +753,7 @@ class StagingLogic:
                 "pt_mobile_value": pt_mobile_value,
                 'case_labels': case_labels,
                 }
+            # self._post_ui_log(f"case_info: {case_info}", source="StagingLogic")
             # self._post_ui_log(f"dicom_2d_count: {case_info['dicom_2d_count']}", source="StagingLogic")
             case_info_path = today_staging_folder / case.name / f"{case.name}_details.json"
             self.write_case(case_info, case_info_path)
@@ -897,7 +900,8 @@ class StagingLogic:
                                                                 exam = ris.get("exam", None)
                                                                 ref_doc = ris.get("ref_doc", None)
                                                             else:
-                                                                return None                                                        
+                                                                self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
+                                                                continue                                                        
 
                                                         study_info = self._extract_study_info(ds) if study_info is None else study_info
                                                         if number_of_frames is not None: # number_of_frames exist stage all dicoms
@@ -977,7 +981,8 @@ class StagingLogic:
                                                             exam = ris.get("exam", None)
                                                             ref_doc = ris.get("ref_doc", None)
                                                         else:
-                                                            return None
+                                                            self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
+                                                            continue
                                                             
                                                     study_info = self._extract_study_info(ds) if study_info is None else study_info
 
