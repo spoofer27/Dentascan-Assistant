@@ -444,6 +444,7 @@ class StagingLogic:
                         pt_phone_value = None
                         pt_mobile_value = None
                         ref_doc = None
+                        eng_ref_doc = None
                         ref_email_value = None
                         ref_phone_value = None
                         ref_mobile_value = None
@@ -479,7 +480,7 @@ class StagingLogic:
                                                             ris = ris_logic.run_search_case_by_code(case_id)
                                                             if ris is not None:
                                                                 exam = ris.get("exam")
-                                                                ref_doc = ris.get("ref_doc")
+                                                                eng_ref_doc = ris.get("eng_ref_doc")
                                                             else:
                                                                 self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
                                                                 continue
@@ -508,7 +509,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
-                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.ReferringPhysicianName = eng_ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                             
                                                             if int(number_of_frames) > 1:  # single dicom with multiple frames
@@ -560,7 +561,7 @@ class StagingLogic:
                                                         ris = ris_logic.run_search_case_by_code(case_id)
                                                         if ris is not None:
                                                             exam = ris.get("exam", None)
-                                                            ref_doc = ris.get("ref_doc", None)
+                                                            eng_ref_doc = ris.get("eng_ref_doc", None)
                                                         else:
                                                             self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
                                                             continue
@@ -596,7 +597,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
-                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.ReferringPhysicianName = eng_ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                         else:  # multi-file dicom
                                                             series_uid = getattr(ds, "SeriesInstanceUID", None)
@@ -720,6 +721,7 @@ class StagingLogic:
                 pt_phone_value = ris.get("pt_phone_value", None)
                 pt_mobile_value = ris.get("pt_mobile_value", None)
                 ref_doc = ris.get("ref_doc", None)
+                eng_ref_doc = ris.get("eng_ref_doc", None)
                 ref_email_value = ris.get("ref_email_value", None)
                 ref_phone_value = ris.get("ref_phone_value", None)
                 ref_mobile_value = ris.get("ref_mobile_value", None)
@@ -745,6 +747,7 @@ class StagingLogic:
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,
@@ -779,6 +782,7 @@ class StagingLogic:
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,
@@ -863,6 +867,7 @@ class StagingLogic:
                         pt_phone_value = None
                         pt_mobile_value = None
                         ref_doc = None
+                        eng_ref_doc = None
                         ref_email_value = None
                         ref_phone_value = None
                         ref_mobile_value = None
@@ -898,7 +903,7 @@ class StagingLogic:
                                                             ris = ris_logic.run_search_yesterday_case_by_code(case_id)
                                                             if ris is not None:
                                                                 exam = ris.get("exam", None)
-                                                                ref_doc = ris.get("ref_doc", None)
+                                                                eng_ref_doc = ris.get("eng_ref_doc", None)
                                                             else:
                                                                 self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
                                                                 continue                                                        
@@ -927,7 +932,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
-                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.ReferringPhysicianName = eng_ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
 
                                                             if int(number_of_frames) > 1:  # single dicom with multiple frames
@@ -979,7 +984,7 @@ class StagingLogic:
                                                         ris = ris_logic.run_search_yesterday_case_by_code(case_id)
                                                         if ris is not None:
                                                             exam = ris.get("exam", None)
-                                                            ref_doc = ris.get("ref_doc", None)
+                                                            eng_ref_doc = ris.get("eng_ref_doc", None)
                                                         else:
                                                             self._post_ui_log(f"Case ID {case_id} not found in RIS for case {case.name}, skipping RIS enrichment")
                                                             continue
@@ -1016,7 +1021,7 @@ class StagingLogic:
                                                             if not romexis: # check and update ImplementationVersionName to romexis_10 
                                                                  full_ds.file_meta.ImplementationVersionName = "ROMEXIS_10"
                                                             full_ds.InstitutionName = self.institution_name # update institution name
-                                                            full_ds.ReferringPhysicianName = ref_doc # update referring physician's name
+                                                            full_ds.ReferringPhysicianName = eng_ref_doc # update referring physician's name
                                                             full_ds.save_as(out_path, write_like_original=False) # save to orthanc staging
                                                         else:  # multi-file dicom
                                                             series_uid = getattr(ds, "SeriesInstanceUID", None)
@@ -1140,6 +1145,7 @@ class StagingLogic:
                 pt_phone_value = ris.get("pt_phone_value", None)
                 pt_mobile_value = ris.get("pt_mobile_value", None)
                 ref_doc = ris.get("ref_doc", None)
+                eng_ref_doc = ris.get("eng_ref_doc", None)
                 ref_email_value = ris.get("ref_email_value", None)
                 ref_phone_value = ris.get("ref_phone_value", None)
                 ref_mobile_value = ris.get("ref_mobile_value", None)
@@ -1165,6 +1171,7 @@ class StagingLogic:
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,
@@ -1197,6 +1204,7 @@ class StagingLogic:
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,

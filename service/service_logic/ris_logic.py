@@ -325,6 +325,7 @@ def run_search_case_by_code(case_code, log_widget=None):
             pt_phone_value = None
             pt_mobile_value = None
             ref_doc = None
+            eng_ref_doc_value = None
             ref_email_value = None
             ref_phone_value = None
             ref_mobile_value = None
@@ -451,6 +452,8 @@ def run_search_case_by_code(case_code, log_widget=None):
                             return None
 
                         try: # try extract doctor contact info
+                            # SUB:FormID:j_id791
+                            eng_ref_doc_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:j_id791"))).get_attribute("value") or ""
                             ref_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
                             ref_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
                             ref_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
@@ -460,8 +463,11 @@ def run_search_case_by_code(case_code, log_widget=None):
                                 ref_phone_value = None
                             if ref_mobile_value == "":
                                 ref_mobile_value = None
+                            if eng_ref_doc_value == "":
+                                eng_ref_doc_value = None
                         except Exception:
                             _post_ui_log("ref doctor contact extraction failed")
+                            eng_ref_doc_value = None
                             ref_email_value = None
                             ref_phone_value = None
                             ref_mobile_value = None
@@ -478,6 +484,7 @@ def run_search_case_by_code(case_code, log_widget=None):
                             return None
 
                         _post_ui_log(f"Ref. Doctor data fetched for case {case_id}")
+                        _post_ui_log(f"         eng_ref_doc_value: {eng_ref_doc_value}")
                         _post_ui_log(f"         ref_email_value: {ref_email_value}")
                         _post_ui_log(f"         ref_phone_value: {ref_phone_value}")
                         _post_ui_log(f"         ref_mobile_value: {ref_mobile_value}")
@@ -490,11 +497,15 @@ def run_search_case_by_code(case_code, log_widget=None):
                 return None
             
             try: # getting pt data
+                _post_ui_log("1")
                 normalized_name = normalize_rtl_text(pt)
+                _post_ui_log("2")
                 click_element_safe(driver, wait, (By.ID, "j_id46:j_id156"))
                 click_element_safe(driver, wait, (By.ID, "j_id46:j_id163"))
+                _post_ui_log("3")
                 time.sleep(1)
                 title_span = wait.until(EC.presence_of_element_located((By.ID, "SUB:j_id771")))
+                _post_ui_log("4")
                 title_text = title_span.text.strip()
                 _post_ui_log(f"Patient page title: {title_text}")
                 if "المرضى" in title_text:
@@ -585,6 +596,7 @@ def run_search_case_by_code(case_code, log_widget=None):
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc_value,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,
@@ -602,6 +614,7 @@ def run_search_case_by_code(case_code, log_widget=None):
             pt_email_value,
             pt_phone_value,
             pt_mobile_value,
+            eng_ref_doc_value,
         ]
         if not any((str(v).strip() if v is not None else "") for v in meaningful_values):
             _post_ui_log(f"Search returned empty data for case {code_value}; skipping update.")
@@ -632,6 +645,7 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
             ref_email_value = None
             ref_phone_value = None
             ref_mobile_value = None
+            eng_ref_doc_value = None
 
             if code_value:
                 _post_ui_log_throttled(
@@ -755,9 +769,12 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
                             return None
 
                         try: # try extract doctor contact info
+                            eng_ref_doc_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:j_id791"))).get_attribute("value") or ""
                             ref_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
                             ref_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
                             ref_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+                            if eng_ref_doc_value == "":
+                                eng_ref_doc_value = None
                             if ref_email_value == "":
                                 ref_email_value = None
                             if ref_phone_value == "":
@@ -769,6 +786,7 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
                             ref_email_value = None
                             ref_phone_value = None
                             ref_mobile_value = None
+                            eng_ref_doc_value = None
                             return None
 
                         try: # try extract notes
@@ -782,6 +800,7 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
                             return None
 
                         _post_ui_log(f"Ref. Doctor data fetched for case {case_id}")
+                        _post_ui_log(f"         eng_ref_doc_value: {eng_ref_doc_value}")
                         _post_ui_log(f"         ref_email_value: {ref_email_value}")
                         _post_ui_log(f"         ref_phone_value: {ref_phone_value}")
                         _post_ui_log(f"         ref_mobile_value: {ref_mobile_value}")
@@ -889,6 +908,7 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
                 "pt": pt, 
                 "exam": exam, 
                 "ref_doc": ref_doc,
+                "eng_ref_doc": eng_ref_doc_value,
                 "ref_email_value": ref_email_value,
                 "ref_phone_value": ref_phone_value,
                 "ref_mobile_value": ref_mobile_value,
@@ -900,6 +920,7 @@ def run_search_yesterday_case_by_code(case_code, log_widget=None):
             pt,
             exam,
             ref_doc,
+            eng_ref_doc_value,
             ref_email_value,
             ref_phone_value,
             ref_mobile_value,
