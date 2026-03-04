@@ -797,7 +797,7 @@ class StagingLogic:
         EXCLUDED_NAMES = {"cbct", "new folder"}
         processed_cases = []
 
-        ris_enabled = self.ris_start_login() is not None
+        ris_enabled = ris_logic is not None
 
         for case in yesterday_folder.iterdir():
 
