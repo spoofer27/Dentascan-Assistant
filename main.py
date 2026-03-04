@@ -158,7 +158,6 @@ class StatusRequestWorker(QThread):
                 self.finished.emit(self.path, payload, error)
             except Exception as e:
                 print(f"[StatusRequestWorker.run] Exception emitting signal: {type(e).__name__}: {e}", flush=True)
-            print(f"[StatusRequestWorker.run] ===== END =====", flush=True)
 
 
 class CasesRequestWorker(QThread):
@@ -1030,7 +1029,7 @@ class DashboardWindow(QMainWindow):
             
             # Populate today's cases
             today_cases = cases_data.get("today", [])
-            print(f"Found {len(today_cases)} cases today", flush=True)
+            # print(f"Found {len(today_cases)} cases today", flush=True)
             self._upsert_case_rows(
                 layout=self.today_cases_layout,
                 widget_map=self.today_case_widgets,
@@ -1040,7 +1039,7 @@ class DashboardWindow(QMainWindow):
             
             # Populate yesterday's cases
             yesterday_cases = cases_data.get("yesterday", [])
-            print(f"Found {len(yesterday_cases)} cases yesterday", flush=True)
+            # print(f"Found {len(yesterday_cases)} cases yesterday", flush=True)
             self._upsert_case_rows(
                 layout=self.yesterday_cases_layout,
                 widget_map=self.yesterday_case_widgets,

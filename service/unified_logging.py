@@ -25,7 +25,8 @@ def configure_service_logging(level: int = logging.INFO) -> logging.Logger:
         _SERVICE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)s | %(process)d | %(threadName)s | %(name)s | %(message)s"
+            # "%(asctime)s | %(levelname)s | %(process)d | %(threadName)s | %(name)s | %(message)s"
+            "%(message)s"
         )
 
         file_handler = RotatingFileHandler(

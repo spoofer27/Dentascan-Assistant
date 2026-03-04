@@ -351,6 +351,7 @@ def run_search_case_by_code(case_code, log_widget=None):
                 message="Monitoring for alert popups...",
                 min_interval_seconds=15.0,
             )
+
             try:
                 alert = WebDriverWait(driver, 5).until(EC.alert_is_present())
                 _post_ui_log("Alert appeared: " + alert.text)
@@ -371,13 +372,14 @@ def run_search_case_by_code(case_code, log_widget=None):
                 min_interval_seconds=15.0,
             )
 
-            try: # getting search results
+            try: # getting cases table rows
                 cases_div = driver.find_element(By.ID, "SUB:TableFrm:j_id826")
                 cases_table = cases_div.find_element(By.ID, "SUB:TableFrm:TableID")
                 cases_table_body = cases_table.find_element(By.XPATH, "./tbody")
                 rows = cases_table_body.find_elements(By.XPATH, "./tr") if cases_table_body else []
             except Exception:
                 rows = []
+                return None
 
             rows_len = len(rows)
             if rows_len > 0:
@@ -410,31 +412,70 @@ def run_search_case_by_code(case_code, log_widget=None):
                 title_text = title_span.text.strip()
                 _post_ui_log(f"Ref. Doctor page title: {title_text}")
                 if "الأطباء المعالجين" in title_text:
-                    try:
-                        click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id852"))
-                        time.sleep(0.5)
 
-                        name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
-                        driver.execute_script(
-                            "arguments[0].setAttribute('dir','rtl');"
-                            "arguments[0].style.direction='rtl';"
-                            "arguments[0].style.textAlign='right';",
-                            name_input,
-                        )
-                        fill_input_text_safe(driver, name_input, normalized_name)
-                        click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id857"))
-                        time.sleep(0.5)
+                    try: # getting ref doctor data
 
-                        doctor_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
-                        click_web_element_safe(driver, doctor_row)
-                        time.sleep(0.5)
+                        try: # try reset search 1st
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id852")) # new search
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("new search failed")
+                            return None
 
-                        ref_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
-                        ref_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
-                        ref_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+                        try: # try write ref doctor in search input
+                            name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
+                            driver.execute_script(
+                                "arguments[0].setAttribute('dir','rtl');"
+                                "arguments[0].style.direction='rtl';"
+                                "arguments[0].style.textAlign='right';",
+                                name_input,
+                            )
+                            fill_input_text_safe(driver, name_input, normalized_name)
+                        except Exception:
+                            _post_ui_log("ref doctor name input failed")
+                            return None
+                        
+                        try: # try click search button
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id857"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("ref doctor search click failed")
+                            return None
+                        
+                        try: # try click doctor row
+                            doctor_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
+                            click_web_element_safe(driver, doctor_row)
+                            time.sleep(1) 
+                        except Exception:
+                            _post_ui_log("ref doctor row click failed")
+                            return None
 
-                        notes_element = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:j_id849")))
-                        notes_value = notes_element.get_attribute("value") or notes_element.text or ""
+                        try: # try extract doctor contact info
+                            ref_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
+                            ref_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
+                            ref_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+                            if ref_email_value == "":
+                                ref_email_value = None
+                            if ref_phone_value == "":
+                                ref_phone_value = None
+                            if ref_mobile_value == "":
+                                ref_mobile_value = None
+                        except Exception:
+                            _post_ui_log("ref doctor contact extraction failed")
+                            ref_email_value = None
+                            ref_phone_value = None
+                            ref_mobile_value = None
+                            return None
+
+                        try: # try extract notes
+                            notes_element = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:j_id849")))
+                            notes_value = notes_element.get_attribute("value") or notes_element.text or ""
+                            if notes_value == "":
+                                notes_value = None
+                        except Exception:
+                            _post_ui_log("ref doctor notes extraction failed")
+                            notes_value = None
+                            return None
 
                         _post_ui_log(f"Ref. Doctor data fetched for case {case_id}")
                         _post_ui_log(f"         ref_email_value: {ref_email_value}")
@@ -443,7 +484,7 @@ def run_search_case_by_code(case_code, log_widget=None):
                         _post_ui_log(f"         notes_value: {notes_value}")
                     except Exception as e:
                         _post_ui_log(f"Ref. Doctor data ERROR: {e}")
-                        return None
+                        return None      
             except Exception as e:
                 _post_ui_log(f"Ref. Doctor page open ERROR: {e}")
                 return None
@@ -457,30 +498,66 @@ def run_search_case_by_code(case_code, log_widget=None):
                 title_text = title_span.text.strip()
                 _post_ui_log(f"Patient page title: {title_text}")
                 if "المرضى" in title_text:
-                    try:
-                        click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id849"))
-                        time.sleep(0.5)
 
-                        pt_name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
-                        driver.execute_script(
-                            "arguments[0].setAttribute('dir','rtl');"
-                            "arguments[0].style.direction='rtl';"
-                            "arguments[0].style.textAlign='right';",
-                            pt_name_input,
-                        )
-                        fill_input_text_safe(driver, pt_name_input, normalized_name)
-                        click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id854"))
-                        time.sleep(0.5)
+                    try: # getting pt data
 
-                        pt_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
-                        click_web_element_safe(driver, pt_row)
-                        time.sleep(0.5)
+                        try: # try reset search 1st
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id849"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("new pt search failed")
+                            return None
 
-                        pt_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
-                        pt_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
-                        pt_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+                        try: # try write pt name in search input
+                            pt_name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
+                            driver.execute_script(
+                                "arguments[0].setAttribute('dir','rtl');"
+                                "arguments[0].style.direction='rtl';"
+                                "arguments[0].style.textAlign='right';",
+                                pt_name_input,
+                            )
+                            fill_input_text_safe(driver, pt_name_input, normalized_name)
+                        except Exception:
+                            _post_ui_log("pt name input failed")
+                            return None
+                        
+                        try: # try click search button
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id854"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("pt search button click failed")
+                            return None
+
+                        try: # try click pt row
+                            pt_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
+                            click_web_element_safe(driver, pt_row)
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("pt row click failed")
+                            return None
+
+                        try: # try extract pt contact info
+                            pt_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
+                            pt_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
+                            pt_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+
+                            if pt_email_value == "":
+                                pt_email_value = None
+                            if pt_phone_value == "":
+                                pt_phone_value = None
+                            if pt_mobile_value == "":
+                                pt_mobile_value = None
+                        except Exception:
+                            _post_ui_log("pt contact extraction failed")
+                            pt_email_value = None
+                            pt_phone_value = None
+                            pt_mobile_value = None
+                            return None
 
                         _post_ui_log(f"Patient data fetched for case {case_id}")
+                        _post_ui_log(f"         pt_email_value: {pt_email_value}")
+                        _post_ui_log(f"         pt_phone_value: {pt_phone_value}")
+                        _post_ui_log(f"         pt_mobile_value: {pt_mobile_value}")
                     except Exception as e:
                         _post_ui_log(f"Patient data ERROR: {e}")
                         return None
@@ -530,8 +607,313 @@ def run_search_case_by_code(case_code, log_widget=None):
             _post_ui_log(f"Search returned empty data for case {code_value}; skipping update.")
             return None
 
-        logger.info("Final extracted data: %s", results)
+        # logger.info("Final extracted data: %s", results)
         return results
+
+
+
+def run_search_yesterday_case_by_code(case_code, log_widget=None):
+    global driver, wait
+    if not _ensure_selenium_ready():
+        return None
+    with driver_lock:
+        if driver is None:
+            _post_ui_log("Driver not available. Please login first.")
+            return None
+        try:
+            code_value = str(case_code).strip()
+            matched_case_id = None
+            exam = None
+            pt = None
+            pt_email_value = None
+            pt_phone_value = None
+            pt_mobile_value = None
+            ref_doc = None
+            ref_email_value = None
+            ref_phone_value = None
+            ref_mobile_value = None
+
+            if code_value:
+                _post_ui_log_throttled(
+                    key=f"search_case_id:{code_value}",
+                    message=f"Searching Case ID: {code_value}",
+                    min_interval_seconds=30.0,
+                )
+            else:
+                _post_ui_log("Case ID empty. Loading all available cases...")
+
+            _post_ui_log_throttled(
+                key=f"opening_cases_page:{code_value or 'all'}",
+                message="Opening Cases Page...",
+                min_interval_seconds=15.0,
+            )
+            click_element_safe(driver, wait, (By.ID, "j_id46:j_id391"))
+            click_element_safe(driver, wait, (By.ID, "j_id46:j_id400"))
+            time.sleep(1)
+            _post_ui_log_throttled(
+                key=f"monitoring_alerts:{code_value or 'all'}",
+                message="Monitoring for alert popups...",
+                min_interval_seconds=15.0,
+            )
+
+            try:
+                alert = WebDriverWait(driver, 5).until(EC.alert_is_present())
+                _post_ui_log("Alert appeared: " + alert.text)
+                alert.accept()
+                _post_ui_log("Alert Removed.")
+            except TimeoutException:
+                _post_ui_log("No alert appeared")
+
+            code_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:searchFrm:j_id782")))
+            code_input.clear()
+            if code_value:
+                code_input.send_keys(code_value)
+            click_element_safe(driver, wait, (By.ID, "SUB:searchFrm:j_id824"))
+            time.sleep(1)
+            _post_ui_log_throttled(
+                key=f"search_submitted:{code_value or 'all'}",
+                message="Search submitted.",
+                min_interval_seconds=15.0,
+            )
+
+            try: # getting cases table rows
+                cases_div = driver.find_element(By.ID, "SUB:TableFrm:j_id826")
+                cases_table = cases_div.find_element(By.ID, "SUB:TableFrm:TableID")
+                cases_table_body = cases_table.find_element(By.XPATH, "./tbody")
+                rows = cases_table_body.find_elements(By.XPATH, "./tr") if cases_table_body else []
+            except Exception:
+                rows = []
+                return None
+
+            rows_len = len(rows)
+            if rows_len > 0:
+                _post_ui_log("Found " + str(rows_len) + " Cases")
+                for row in rows:
+                    tds = row.find_elements(By.TAG_NAME, "td")
+                    if len(tds) < 9:
+                        continue
+                    case_id = get_cell_text(tds[0])
+                    if case_id == code_value:
+                        matched_case_id = case_id
+                        exam = get_cell_text(tds[2])
+                        pt = get_cell_text(tds[5])
+                        ref_doc = get_cell_text(tds[8])
+                        break
+            else:
+                _post_ui_log("No Cases Found")
+                return None
+
+            if matched_case_id is None:
+                _post_ui_log(f"Case not found for code: {code_value}")
+                return None
+
+            try: # getting ref doctor data
+                normalized_name = normalize_rtl_text(ref_doc)
+                click_element_safe(driver, wait, (By.ID, "j_id46:j_id156"))
+                click_element_safe(driver, wait, (By.ID, "j_id46:j_id203"))
+                time.sleep(1)
+                title_span = wait.until(EC.presence_of_element_located((By.ID, "SUB:j_id771")))
+                title_text = title_span.text.strip()
+                _post_ui_log(f"Ref. Doctor page title: {title_text}")
+                if "الأطباء المعالجين" in title_text:
+
+                    try: # getting ref doctor data
+
+                        try: # try reset search 1st
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id852")) # new search
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("new search failed")
+                            return None
+
+                        try: # try write ref doctor in search input
+                            name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
+                            driver.execute_script(
+                                "arguments[0].setAttribute('dir','rtl');"
+                                "arguments[0].style.direction='rtl';"
+                                "arguments[0].style.textAlign='right';",
+                                name_input,
+                            )
+                            fill_input_text_safe(driver, name_input, normalized_name)
+                        except Exception:
+                            _post_ui_log("ref doctor name input failed")
+                            return None
+                        
+                        try: # try click search button
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id857"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("ref doctor search click failed")
+                            return None
+                        
+                        try: # try click doctor row
+                            doctor_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
+                            click_web_element_safe(driver, doctor_row)
+                            time.sleep(1) 
+                        except Exception:
+                            _post_ui_log("ref doctor row click failed")
+                            return None
+
+                        try: # try extract doctor contact info
+                            ref_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
+                            ref_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
+                            ref_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+                            if ref_email_value == "":
+                                ref_email_value = None
+                            if ref_phone_value == "":
+                                ref_phone_value = None
+                            if ref_mobile_value == "":
+                                ref_mobile_value = None
+                        except Exception:
+                            _post_ui_log("ref doctor contact extraction failed")
+                            ref_email_value = None
+                            ref_phone_value = None
+                            ref_mobile_value = None
+                            return None
+
+                        try: # try extract notes
+                            notes_element = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:j_id849")))
+                            notes_value = notes_element.get_attribute("value") or notes_element.text or ""
+                            if notes_value == "":
+                                notes_value = None
+                        except Exception:
+                            _post_ui_log("ref doctor notes extraction failed")
+                            notes_value = None
+                            return None
+
+                        _post_ui_log(f"Ref. Doctor data fetched for case {case_id}")
+                        _post_ui_log(f"         ref_email_value: {ref_email_value}")
+                        _post_ui_log(f"         ref_phone_value: {ref_phone_value}")
+                        _post_ui_log(f"         ref_mobile_value: {ref_mobile_value}")
+                        _post_ui_log(f"         notes_value: {notes_value}")
+                    except Exception as e:
+                        _post_ui_log(f"Ref. Doctor data ERROR: {e}")
+                        return None      
+            except Exception as e:
+                _post_ui_log(f"Ref. Doctor page open ERROR: {e}")
+                return None
+            
+            try: # getting pt data
+                normalized_name = normalize_rtl_text(pt)
+                click_element_safe(driver, wait, (By.ID, "j_id46:j_id156"))
+                click_element_safe(driver, wait, (By.ID, "j_id46:j_id163"))
+                time.sleep(1)
+                title_span = wait.until(EC.presence_of_element_located((By.ID, "SUB:j_id771")))
+                title_text = title_span.text.strip()
+                _post_ui_log(f"Patient page title: {title_text}")
+                if "المرضى" in title_text:
+
+                    try: # getting pt data
+
+                        try: # try reset search 1st
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id849"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("new pt search failed")
+                            return None
+
+                        try: # try write pt name in search input
+                            pt_name_input = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:NameID")))
+                            driver.execute_script(
+                                "arguments[0].setAttribute('dir','rtl');"
+                                "arguments[0].style.direction='rtl';"
+                                "arguments[0].style.textAlign='right';",
+                                pt_name_input,
+                            )
+                            fill_input_text_safe(driver, pt_name_input, normalized_name)
+                        except Exception:
+                            _post_ui_log("pt name input failed")
+                            return None
+                        
+                        try: # try click search button
+                            click_element_safe(driver, wait, (By.ID, "SUB:FormID:j_id854"))
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("pt search button click failed")
+                            return None
+
+                        try: # try click pt row
+                            pt_row = wait.until(EC.element_to_be_clickable((By.ID, "SUB:TableFrm:TableID:0")))
+                            click_web_element_safe(driver, pt_row)
+                            time.sleep(1)
+                        except Exception:
+                            _post_ui_log("pt row click failed")
+                            return None
+
+                        try: # try extract pt contact info
+                            pt_email_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:EmailID"))).get_attribute("value") or ""
+                            pt_phone_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:PhoneID"))).get_attribute("value") or ""
+                            pt_mobile_value = wait.until(EC.presence_of_element_located((By.ID, "SUB:FormID:MobileID"))).get_attribute("value") or ""
+
+                            if pt_email_value == "":
+                                pt_email_value = None
+                            if pt_phone_value == "":
+                                pt_phone_value = None
+                            if pt_mobile_value == "":
+                                pt_mobile_value = None
+                        except Exception:
+                            _post_ui_log("pt contact extraction failed")
+                            pt_email_value = None
+                            pt_phone_value = None
+                            pt_mobile_value = None
+                            return None
+
+                        _post_ui_log(f"Patient data fetched for case {case_id}")
+                        _post_ui_log(f"         pt_email_value: {pt_email_value}")
+                        _post_ui_log(f"         pt_phone_value: {pt_phone_value}")
+                        _post_ui_log(f"         pt_mobile_value: {pt_mobile_value}")
+                    except Exception as e:
+                        _post_ui_log(f"Patient data ERROR: {e}")
+                        return None
+            except Exception as e:
+                _post_ui_log(f"Patient page open ERROR: {e}")
+                return None
+
+        except Exception as e:
+            error_text = str(e)
+            _post_ui_log(f"Search ERROR: {error_text}")
+            lowered = error_text.lower()
+            if "invalid session id" in lowered or "no such window" in lowered:
+                try:
+                    if driver is not None:
+                        driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                wait = None
+                _post_ris_status(False)
+                _post_ui_log("RIS browser session reset; re-login required.")
+            return None
+    
+        results = {
+                "pt": pt, 
+                "exam": exam, 
+                "ref_doc": ref_doc,
+                "ref_email_value": ref_email_value,
+                "ref_phone_value": ref_phone_value,
+                "ref_mobile_value": ref_mobile_value,
+                "pt_email_value": pt_email_value,
+                "pt_phone_value": pt_phone_value,
+                "pt_mobile_value": pt_mobile_value,
+                }
+        meaningful_values = [
+            pt,
+            exam,
+            ref_doc,
+            ref_email_value,
+            ref_phone_value,
+            ref_mobile_value,
+            pt_email_value,
+            pt_phone_value,
+            pt_mobile_value,
+        ]
+        if not any((str(v).strip() if v is not None else "") for v in meaningful_values):
+            _post_ui_log(f"Search returned empty data for case {code_value}; skipping update.")
+            return None
+
+        # logger.info("Final extracted data: %s", results)
+        return results
+
 
 def run_logout(log_widget=None):
     """Logout and close the browser, clear driver state."""
