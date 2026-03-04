@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from urllib import request
 from urllib.error import URLError
 from ctypes import wintypes
@@ -32,6 +33,113 @@ API_SCRIPT = os.path.join(os.path.dirname(__file__), "service_api.py")
 
 # Single-instance server name for UI
 UI_SERVER_NAME = "DentascanServiceUI"
+
+
+def _show_already_running_alert():
+    message = "App is Already running"
+    if os.name == "nt":
+        try:
+            ctypes = __import__("ctypes")
+            ctypes.windll.user32.MessageBoxW(0, message, "Dentascan Service UI", 0x00000030)
+            return
+        except Exception:
+            pass
+    _ui_log(message)
+
+
+def _prompt_close_other_instances() -> bool:
+    message = "App is Already running.\nClose all other instances and open this one?"
+    try:
+        if os.name == "nt":
+            ctypes = __import__("ctypes")
+            MB_YESNO = 0x00000004
+            MB_ICONWARNING = 0x00000030
+            MB_SYSTEMMODAL = 0x00001000
+            IDYES = 6
+            result = ctypes.windll.user32.MessageBoxW(
+                0,
+                message,
+                "Dentascan Service UI",
+                MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL,
+            )
+            return result == IDYES
+    except Exception:
+        pass
+
+    try:
+        reply = QtWidgets.QMessageBox.question(
+            None,
+            "Dentascan Service UI",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+    except Exception:
+        return False
+
+
+def _get_service_ui_processes():
+    if os.name != "nt":
+        return []
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        cmd = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -and $_.Name -match 'python|pythonw' -and $_.CommandLine -match 'service_ui\\.py' } | "
+            "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+        )
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                cmd,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=creationflags,
+        )
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            return []
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        return [
+            {
+                "pid": int(entry.get("ProcessId")),
+                "name": entry.get("Name") or "",
+                "cmd": entry.get("CommandLine") or "",
+            }
+            for entry in parsed
+            if entry.get("ProcessId")
+        ]
+    except Exception:
+        return []
+
+
+def _kill_other_service_ui_instances():
+    current_pid = os.getpid()
+    procs = _get_service_ui_processes()
+    for proc in procs:
+        pid = proc.get("pid")
+        if not pid or pid == current_pid:
+            continue
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F", "/T"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if (os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW")) else 0,
+            )
+        except Exception:
+            pass
 
 def _reexec_with_pythonw_if_needed():
     # If launched with python.exe on Windows, re-exec using pythonw.exe to avoid a console window
@@ -89,7 +197,7 @@ class ServiceMonitorApp(QtWidgets.QMainWindow):
         self.api_process = None
         self.thread_pool = QtCore.QThreadPool.globalInstance()
         self.is_dark = True
-        self.log_path = os.path.join(os.path.dirname(__file__), "log.txt")
+        self.log_path = os.path.join(os.path.dirname(__file__), "service.log")
         self._log_last_mtime = None
         self._log_last_size = None
         self._log_max_lines = 5000
@@ -119,10 +227,15 @@ class ServiceMonitorApp(QtWidgets.QMainWindow):
             self.log_timer.start()
         else:
             if hasattr(self, "log_path_label"):
-                self.log_path_label.setText("Live UI logs + service logs (file tail disabled)")
+                self.log_path_label.setText("Unified service log stream from /api/service-log")
 
-        # Poll API for service-emitted logs
-        self._api_log_since_id = None
+        # Poll API for unified service.log lines
+        self._service_log_last_lines = []
+        self._service_log_recovering = False
+        self._service_log_endpoint = "/api/service-log?limit=400"
+        self._service_log_retry_count = 0
+        self._service_log_last_retry_ts = 0.0
+        self._service_log_fallback_mode = False
         self.api_log_timer = QtCore.QTimer(self)
         self.api_log_timer.setInterval(1500)
         self.api_log_timer.timeout.connect(self._poll_api_logs)
@@ -646,12 +759,24 @@ class ServiceMonitorApp(QtWidgets.QMainWindow):
 
     def _poll_api_logs(self):
         try:
-            path = "/api/ui-log"
-            if self._api_log_since_id is not None:
-                path = f"/api/ui-log?since_id={self._api_log_since_id}"
+            path = self._service_log_endpoint
             self._enqueue_request("GET", path)
         except Exception as e:
             _ui_log("Log poll error:", e)
+
+    def _compute_new_service_log_lines(self, latest_lines):
+        previous = list(self._service_log_last_lines or [])
+        current = list(latest_lines or [])
+
+        if not previous:
+            return current
+
+        max_overlap = min(len(previous), len(current))
+        for overlap in range(max_overlap, 0, -1):
+            if previous[-overlap:] == current[:overlap]:
+                return current[overlap:]
+
+        return current
 
     def _post_action(self, path):
         self._enqueue_request("POST", path)
@@ -756,6 +881,26 @@ class ServiceMonitorApp(QtWidgets.QMainWindow):
 
     def _handle_response(self, path, payload, error):
         if error:
+            if path.startswith("/api/service-log") and "404" in str(error):
+                now = time.time()
+                can_retry = (now - self._service_log_last_retry_ts) >= 15.0
+                if (not self._service_log_recovering) and (self._service_log_retry_count < 1) and can_retry:
+                    self._service_log_recovering = True
+                    self._service_log_retry_count += 1
+                    self._service_log_last_retry_ts = now
+                    _ui_log("/api/service-log returned 404; resetting API process...")
+                    try:
+                        self._reset_api_processes()
+                    except Exception as recover_err:
+                        _ui_log("API reset after 404 failed:", recover_err)
+                    finally:
+                        self._service_log_recovering = False
+                elif not self._service_log_fallback_mode:
+                    self._service_log_fallback_mode = True
+                    self._service_log_endpoint = "/api/ui-log?limit=200"
+                    _ui_log("/api/service-log unavailable; switched log polling to /api/ui-log fallback.")
+                return
+
             self.api_state_label.setText("Disconnected")
             self.api_state_label.setStyleSheet("color: #ef4444;")
             self.service_state_label.setText("Unknown")
@@ -812,25 +957,25 @@ class ServiceMonitorApp(QtWidgets.QMainWindow):
                     f"Error: {payload.get('error', 'Unknown')} (Service: {service_name})"
                 )
                 self.message_label.setStyleSheet("color: #ef4444;")
+        elif path.startswith("/api/service-log"):
+            try:
+                lines = (payload or {}).get("lines") or []
+                new_lines = self._compute_new_service_log_lines(lines)
+                for line in new_lines:
+                    self._append_ui_log(str(line))
+                self._service_log_last_lines = list(lines)
+                self._service_log_retry_count = 0
+            except Exception as e:
+                _ui_log("Failed to process api logs:", e)
         elif path.startswith("/api/ui-log"):
             try:
                 logs = (payload or {}).get("logs") or []
-                if logs:
-                    # Track the next id as last seen + 1
-                    max_id = max((e.get("id") or 0) for e in logs) if logs else None
-                    if max_id:
-                        self._api_log_since_id = max_id + 1
-                    # Newest-first or whatever order provided
-                    for entry in logs:
-                        msg = entry.get("message") or ""
-                        color = entry.get("color") or None
-                        self._append_ui_log(msg, color=color)
-                else:
-                    # On first poll (None), set since_id to 1 to avoid fetching all again
-                    if self._api_log_since_id is None:
-                        self._api_log_since_id = 1
+                for entry in reversed(logs):
+                    msg = entry.get("message") or ""
+                    if msg:
+                        self._append_ui_log(str(msg))
             except Exception as e:
-                _ui_log("Failed to process api logs:", e)
+                _ui_log("Failed to process fallback api logs:", e)
         else:
             _ui_log("Action result", path, "ok=" if (payload and payload.get("ok")) else "failed",
                     "msg=", (payload.get("output") or payload.get("message")) if payload else None)
@@ -1130,11 +1275,19 @@ def main():
                 socket.write(b"SHOW")
                 socket.flush()
                 socket.waitForBytesWritten(200)
+            else:
+                if _prompt_close_other_instances():
+                    _kill_other_service_ui_instances()
+                    QtCore.QThread.msleep(400)
+                else:
+                    _show_already_running_alert()
+                    sys.exit(0)
         except Exception as e:
             _ui_log("Error forwarding to instance:", e)
         finally:
             socket.disconnectFromServer()
-        sys.exit(0)
+        if "--show" in sys.argv:
+            sys.exit(0)
 
     try:
         QtNetwork.QLocalServer.removeServer(UI_SERVER_NAME)

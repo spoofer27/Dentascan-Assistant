@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 import servicemanager
 import win32event
 import win32service
@@ -7,6 +8,45 @@ import win32serviceutil
 import threading
 import time
 from service_config import SERVICE_NAME
+from unified_logging import get_service_logger
+
+logger = get_service_logger(__name__)
+
+
+def _preferred_api_python() -> str:
+    exe_dir = os.path.dirname(sys.executable)
+    python_exe = os.path.join(exe_dir, "python.exe")
+    pythonw_exe = os.path.join(exe_dir, "pythonw.exe")
+    if os.path.exists(python_exe):
+        return python_exe
+    if os.path.exists(pythonw_exe):
+        return pythonw_exe
+    return sys.executable
+
+
+def _start_api_process(log_info, log_error):
+    api_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_api.py")
+    if not os.path.exists(api_script):
+        log_error(f"API script not found: {api_script}")
+        return None
+
+    env = dict(os.environ)
+    creationflags = subprocess.CREATE_NO_WINDOW if (os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW")) else 0
+
+    try:
+        process = subprocess.Popen(
+            [_preferred_api_python(), api_script],
+            cwd=os.path.dirname(api_script),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            creationflags=creationflags,
+        )
+        log_info(f"api process started. pid={process.pid}")
+        return process
+    except Exception as exc:
+        log_error(f"Failed to start api process: {exc}")
+        return None
 
 
 def _run_worker_supervisor(stop_event, wait_for_stop_ms, log_info, log_error):
@@ -35,6 +75,9 @@ def _run_worker_supervisor(stop_event, wait_for_stop_ms, log_info, log_error):
         }
     }
 
+    api_process = None
+    api_crash_count = 0
+
     def start_worker(name):
         worker = workers[name]
         thread = threading.Thread(
@@ -49,6 +92,7 @@ def _run_worker_supervisor(stop_event, wait_for_stop_ms, log_info, log_error):
     try:
         for name in workers:
             start_worker(name)
+        api_process = _start_api_process(log_info=log_info, log_error=log_error)
     except Exception as exc:
         log_error(f"Failed to start worker threads: {exc}")
 
@@ -77,6 +121,25 @@ def _run_worker_supervisor(stop_event, wait_for_stop_ms, log_info, log_error):
 
             start_worker(name)
 
+        if api_process is None:
+            api_crash_count += 1
+            if api_crash_count <= MAX_CRASHES:
+                delay = BASE_BACKOFF * (2 ** (api_crash_count - 1))
+                log_info(f"Restarting api in {delay} seconds...")
+                if wait_for_stop_ms(int(delay * 1000)):
+                    log_info("Stop signal received during API backoff wait. Exiting supervisor loop.")
+                    should_exit = True
+                else:
+                    api_process = _start_api_process(log_info=log_info, log_error=log_error)
+            else:
+                log_error("api exceeded max crashes. Not restarting.")
+        else:
+            api_exit_code = api_process.poll()
+            if api_exit_code is not None:
+                api_crash_count += 1
+                log_error(f"api exited unexpectedly with code {api_exit_code} ({api_crash_count} times).")
+                api_process = None
+
         if should_exit:
             break
 
@@ -86,6 +149,18 @@ def _run_worker_supervisor(stop_event, wait_for_stop_ms, log_info, log_error):
     for worker in workers.values():
         if worker["thread"] is not None:
             worker["thread"].join(timeout=30)
+
+    if api_process is not None and api_process.poll() is None:
+        try:
+            api_process.terminate()
+            api_process.wait(timeout=10)
+            log_info("api process terminated cleanly.")
+        except Exception:
+            try:
+                api_process.kill()
+                log_info("api process killed.")
+            except Exception:
+                pass
 
     log_info("Service stopped cleanly.")
 
@@ -106,19 +181,19 @@ def _run_console_debug():
         parent_dir = os.path.dirname(current_dir)
         os.chdir(parent_dir)
     except Exception as exc:
-        print(f"Failed to change directory: {exc}")
+        logger.exception("Failed to change directory")
 
-    print(f"Starting console debug mode... PID: {os.getpid()}")
-    print("Press Ctrl+C to stop.")
+    logger.info("Starting console debug mode... PID: %s", os.getpid())
+    logger.info("Press Ctrl+C to stop.")
 
     def wait_for_stop_ms(timeout_ms):
         return stop_event.wait(timeout_ms / 1000)
 
     def log_info(message):
-        print(message, flush=True)
+        logger.info(message)
 
     def log_error(message):
-        print(message, flush=True)
+        logger.error(message)
 
     try:
         _run_worker_supervisor(
@@ -129,7 +204,7 @@ def _run_console_debug():
         )
     except KeyboardInterrupt:
         stop_event.set()
-        print("Keyboard interrupt received. Stopping...")
+        logger.info("Keyboard interrupt received. Stopping...")
 
 class MyService(win32serviceutil.ServiceFramework):
     _svc_name_ = SERVICE_NAME
@@ -152,7 +227,7 @@ class MyService(win32serviceutil.ServiceFramework):
             parent_dir = os.path.dirname(current_dir)
             os.chdir(parent_dir)
         except Exception as e:
-            print(f"Failed to change directory: {e}")
+            logger.exception("Failed to change directory")
             servicemanager.LogErrorMsg(f"Failed to change directory: {e}")
     
     def SvcStop(self):
@@ -168,15 +243,15 @@ class MyService(win32serviceutil.ServiceFramework):
         try:
             self.main()
         except Exception as exc:
-            print(f"Service error: {exc}")
+            logger.exception("Service error")
             servicemanager.LogErrorMsg(f"Service error: {exc}")
             raise
     
     def main(self):
         try:
-            print(f'Starting Service... PID: {os.getpid()}')
+            logger.info("Starting Service... PID: %s", os.getpid())
         except Exception as e:
-            print(f"Failed to print PID: {e}")
+            logger.exception("Failed to write startup log")
             servicemanager.LogErrorMsg(f"Failed to print PID: {e}")
 
         def wait_for_stop_ms(timeout_ms):
@@ -184,10 +259,10 @@ class MyService(win32serviceutil.ServiceFramework):
             return waited == win32event.WAIT_OBJECT_0
 
         def log_info(message):
-            print(message)
+            logger.info(message)
 
         def log_error(message):
-            print(message)
+            logger.error(message)
             servicemanager.LogErrorMsg(message)
 
         _run_worker_supervisor(

@@ -1,7 +1,10 @@
 import io
 import json
+import os
 import sys
 import threading
+import subprocess
+import tempfile
 from pathlib import Path
 from urllib import request
 from urllib.error import URLError
@@ -102,7 +105,6 @@ class StatusRequestWorker(QThread):
                     try:
                         # print(f"[StatusRequestWorker.run] Step 1: Building URL...", flush=True)
                         full_url = API_BASE + self.path
-                        # print(f"[StatusRequestWorker.run] Step 2: URL built = {full_url}", flush=True)
                     except Exception as e:
                         print(f"[StatusRequestWorker.run] Exception in URL building: {type(e).__name__}: {e}", flush=True)
                         error = f"URL error: {e}"
@@ -111,7 +113,6 @@ class StatusRequestWorker(QThread):
                     try:
                         # print(f"[StatusRequestWorker.run] Step 3: Creating request...", flush=True)
                         req = request.Request(full_url, method=self.method)
-                        # print(f"[StatusRequestWorker.run] Step 4: Request created", flush=True)
                     except Exception as e:
                         print(f"[StatusRequestWorker.run] Exception creating request: {type(e).__name__}: {e}", flush=True)
                         error = f"Request creation error: {e}"
@@ -120,7 +121,6 @@ class StatusRequestWorker(QThread):
                     try:
                         # print(f"[StatusRequestWorker.run] Step 5: Opening URL...", flush=True)
                         response = request.urlopen(req, timeout=3)
-                        # print(f"[StatusRequestWorker.run] Step 6: Got response", flush=True)
                     except Exception as e:
                         print(f"[StatusRequestWorker.run] Exception opening URL: {type(e).__name__}: {e}", flush=True)
                         error = f"URL open error: {e}"
@@ -130,7 +130,6 @@ class StatusRequestWorker(QThread):
                         # print(f"[StatusRequestWorker.run] Step 7: Reading response...", flush=True)
                         raw = response.read().decode("utf-8")
                         response.close()
-                        # print(f"[StatusRequestWorker.run] Step 8: Response read, len={len(raw)}", flush=True)
                     except Exception as e:
                         print(f"[StatusRequestWorker.run] Exception reading response: {type(e).__name__}: {e}", flush=True)
                         error = f"Read error: {e}"
@@ -139,7 +138,6 @@ class StatusRequestWorker(QThread):
                     try:
                         # print(f"[StatusRequestWorker.run] Step 9: Parsing JSON...", flush=True)
                         payload = json.loads(raw)
-                        # print(f"[StatusRequestWorker.run] Step 10: JSON parsed OK", flush=True)
                     except Exception as e:
                         print(f"[StatusRequestWorker.run] Exception parsing JSON: {type(e).__name__}: {e}", flush=True)
                         error = f"JSON parse error: {e}"
@@ -158,14 +156,13 @@ class StatusRequestWorker(QThread):
             try:
                 # print(f"[StatusRequestWorker.run] Emitting with path={self.path}, error={error}", flush=True)
                 self.finished.emit(self.path, payload, error)
-                # print(f"[StatusRequestWorker.run] Signal emitted OK", flush=True)
             except Exception as e:
                 print(f"[StatusRequestWorker.run] Exception emitting signal: {type(e).__name__}: {e}", flush=True)
             print(f"[StatusRequestWorker.run] ===== END =====", flush=True)
 
 
 class CasesRequestWorker(QThread):
-    """Worker to fetch cases from FolderMonitor"""
+    """Worker to fetch cases"""
     finished = pyqtSignal(dict, str)  # (cases_data, error_message)
 
     def __init__(self):
@@ -185,7 +182,7 @@ class CasesRequestWorker(QThread):
                 "today": payload.get("today", []),
                 "yesterday": payload.get("yesterday", []),
             }
-            print(f"[CasesRequestWorker.run] Got cases - Today: {len(cases_data.get('today', []))} | Yesterday: {len(cases_data.get('yesterday', []))}", flush=True)
+            print(f"cases - Today: {len(cases_data.get('today', []))} | Yesterday: {len(cases_data.get('yesterday', []))}", flush=True)
             
         except Exception as e:
             error = str(e)
@@ -195,6 +192,26 @@ class CasesRequestWorker(QThread):
         finally:
             # print(f"[CasesRequestWorker.run] ===== END Fetching Cases =====", flush=True)
             self.finished.emit(cases_data, error)
+
+
+class ServiceLogRequestWorker(QThread):
+    finished = pyqtSignal(list, str)
+
+    def run(self):
+        lines = []
+        error = None
+        try:
+            req = request.Request(API_BASE + "/api/service-log?limit=400", method="GET")
+            with request.urlopen(req, timeout=5) as response:
+                raw = response.read().decode("utf-8")
+            payload = json.loads(raw)
+            lines = payload.get("lines") or []
+            if not isinstance(lines, list):
+                lines = []
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            self.finished.emit(lines, error)
 
 
 def pil_process_icon(icon_path: Path, size: int = 20) -> QIcon:
@@ -300,7 +317,6 @@ class StatusIndicator(QFrame):
         self.online = online
         color = "#22C55E" if online else "#EF4444"
         self.dot.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
-
 
 
 class CaseRow(QFrame):
@@ -495,23 +511,17 @@ class CaseRow(QFrame):
 
 class DashboardWindow(QMainWindow):
     def __init__(self):
-        # print("[DashboardWindow] Initializing...")
-        super().__init__()
-        # print("[DashboardWindow] Super init complete")
-        
+        super().__init__()        
         self.setWindowTitle("Dentascan Case Monitor")
         self.resize(1460, 900)
-        # print("[DashboardWindow] Window properties set")
-
+        
         root = QWidget()
         root.setStyleSheet("background-color: #0F172A;")
         self.setCentralWidget(root)
-        # print("[DashboardWindow] Central widget created")
 
         main_layout = QHBoxLayout(root)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        # print("[DashboardWindow] Main layout created")
         
         # Initialize member variables early (before build methods that set these)
         self.status_indicators = {}
@@ -520,62 +530,53 @@ class DashboardWindow(QMainWindow):
         self.pacs_indicator = None
         self.current_worker = None  # Keep reference to prevent GC
         self.cases_worker = None  # Keep reference to cases worker
+        self.service_log_worker = None
         self.today_cases_layout = None  # Will hold today's cases
         self.yesterday_cases_layout = None  # Will hold yesterday's cases
         self.today_case_widgets = {}
         self.yesterday_case_widgets = {}
+        self._service_log_last_lines = []
         self.thread_pool = QThreadPool.globalInstance()
-        # print("[DashboardWindow] Member variables initialized")
 
-        # print("[DashboardWindow] Building sidebar...")
         main_layout.addWidget(self.build_sidebar())
-        # print("[DashboardWindow] Sidebar built")
         
         self.content_stack = QWidget()
         self.content_layout = QVBoxLayout(self.content_stack)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(self.content_stack, 1)
-        # print("[DashboardWindow] Content stack created")
         
-        # print("[DashboardWindow] Building monitor content...")
         self.monitor_widget = self.build_monitor_content()
-        # print("[DashboardWindow] Monitor widget built")
         
-        # print("[DashboardWindow] Building RIS content...")
         self.ris_widget = self.build_ris_content()
-        # print("[DashboardWindow] RIS widget built")
         
-        # print("[DashboardWindow] Building PACS content...")
         self.pacs_widget = self.build_pacs_content()
-        # print("[DashboardWindow] PACS widget built")
         
         self.content_layout.addWidget(self.monitor_widget)
         self.content_layout.addWidget(self.ris_widget)
         self.content_layout.addWidget(self.pacs_widget)
-        # print("[DashboardWindow] All widgets added to layout")
         
-        # print("[DashboardWindow] Creating poll timer...")
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self._poll_status, Qt.ConnectionType.QueuedConnection)
         self.poll_timer.setSingleShot(False)
         self.poll_timer.setInterval(2000)
-        # print("[DashboardWindow] Poll timer created and configured")
         
         # print("[DashboardWindow] Creating cases poll timer...")
         self.cases_timer = QTimer(self)
         self.cases_timer.timeout.connect(self._poll_cases, Qt.ConnectionType.QueuedConnection)
         self.cases_timer.setSingleShot(False)
         self.cases_timer.setInterval(3000)  # Poll cases every 3 seconds
-        # print("[DashboardWindow] Cases poll timer created and configured")
+
+        self.service_log_timer = QTimer(self)
+        self.service_log_timer.timeout.connect(self._poll_service_log, Qt.ConnectionType.QueuedConnection)
+        self.service_log_timer.setSingleShot(False)
+        self.service_log_timer.setInterval(2000)
         
         # print("[DashboardWindow] Scheduling delayed timer start...")
         QTimer.singleShot(500, self.poll_timer.start)
         QTimer.singleShot(1000, self.cases_timer.start)  # Start cases polling slightly delayed
-        # print("[DashboardWindow] Delayed timer start scheduled")
+        QTimer.singleShot(1200, self.service_log_timer.start)
         
-        # print("[DashboardWindow] Showing monitor view...")
         self.show_monitor()
-        # print("[DashboardWindow] Initialization complete!")
 
     def build_sidebar(self) -> QWidget:
         # print("[DashboardWindow.build_sidebar] Building sidebar...")
@@ -821,23 +822,18 @@ class DashboardWindow(QMainWindow):
         return frame
 
     def _poll_status(self):
-        # print("[DashboardWindow._poll_status] Polling status...", flush=True)
         try:
-            # print("[DashboardWindow._poll_status] Creating StatusRequestWorker...", flush=True)
             self.current_worker = StatusRequestWorker("GET", "/api/status")
-            # print("[DashboardWindow._poll_status] Worker created, about to connect signal...", flush=True)
             safe_flush()
             self.current_worker.finished.connect(self._handle_status_response, Qt.ConnectionType.QueuedConnection)
             # print("[DashboardWindow._poll_status] Signal connected, starting worker thread...", flush=True)
             self.current_worker.start()
-            # print("[DashboardWindow._poll_status] Worker thread started", flush=True)
         except Exception as e:
-            print(f"[DashboardWindow._poll_status] Exception in polling: {e}", flush=True)
+            print(f"[DashboardWindow._poll_status] Exception in status polling: {e}", flush=True)
             import traceback
             traceback.print_exc()
             safe_flush()
-    
-    
+      
     def _handle_status_response(self, path: str, payload: dict, error: str):
         # print(f"[_handle_status_response] Processing response - error={error}, payload exists={payload is not None}", flush=True)
         if error or not payload:
@@ -854,14 +850,10 @@ class DashboardWindow(QMainWindow):
             service_state = payload.get("state", "").lower()
             service_online = service_state == "running"
             ris_online = bool(payload.get("ris_online", False))
-            print("----------------------------------------")
-            print("ris_online =", payload.get("ris_online"))
-            # print(f"[_handle_status_response] Service state from API: {service_state}, updating indicator to: {service_online}", flush=True)
-            
+
             # Update indicators based on API response
             if self.service_indicator:
                 self.service_indicator.set_online(service_online)
-                # print(f"[_handle_status_response] [OK] Service indicator updated", flush=True)
             else:
                 print(f"[_handle_status_response] [WARN] service_indicator is None!", flush=True)
                 
@@ -897,8 +889,6 @@ class DashboardWindow(QMainWindow):
         return "Not uploaded"
     
     def _poll_cases(self):
-        """Poll for cases from FolderMonitor"""
-        # print("[DashboardWindow._poll_cases] Polling cases...", flush=True)
         try:
             if self.cases_worker is not None:
                 # print("[DashboardWindow._poll_cases] Previous worker still running, skipping", flush=True)
@@ -914,6 +904,43 @@ class DashboardWindow(QMainWindow):
         except Exception as e:
             print(f"[DashboardWindow._poll_cases] Exception: {e}", flush=True)
             logger.error(f"Error polling cases: {e}")
+
+    def _poll_service_log(self):
+        try:
+            if self.service_log_worker is not None:
+                return
+            self.service_log_worker = ServiceLogRequestWorker()
+            self.service_log_worker.finished.connect(self._handle_service_log_response, Qt.ConnectionType.QueuedConnection)
+            self.service_log_worker.start()
+        except Exception as e:
+            print(f"[DashboardWindow._poll_service_log] Exception: {e}", flush=True)
+
+    def _compute_new_service_log_lines(self, latest_lines: list) -> list:
+        previous = list(self._service_log_last_lines or [])
+        current = list(latest_lines or [])
+
+        if not previous:
+            return current
+
+        max_overlap = min(len(previous), len(current))
+        for overlap in range(max_overlap, 0, -1):
+            if previous[-overlap:] == current[:overlap]:
+                return current[overlap:]
+
+        return current
+
+    def _handle_service_log_response(self, lines: list, error: str):
+        try:
+            if error:
+                return
+            new_lines = self._compute_new_service_log_lines(lines)
+            for line in new_lines:
+                text = str(line).rstrip()
+                if text:
+                    print(text, flush=True)
+            self._service_log_last_lines = list(lines or [])
+        finally:
+            self.service_log_worker = None
 
     def _build_case_row_payload(self, case_data: dict, fallback_scan_type: str = "Unknown") -> dict:
         return {
@@ -988,9 +1015,7 @@ class DashboardWindow(QMainWindow):
             return False
     
     def _handle_cases_response(self, cases_data: dict, error: str):
-        """Handle cases response and update the UI"""
-        # print(f"[_handle_cases_response] Processing cases response - error={error}", flush=True)
-        
+        """Handle cases response and update the UI"""        
         try:
             if error:
                 print(f"[_handle_cases_response] Error: {error}", flush=True)
@@ -1005,7 +1030,7 @@ class DashboardWindow(QMainWindow):
             
             # Populate today's cases
             today_cases = cases_data.get("today", [])
-            print(f"[_handle_cases_response] Found {len(today_cases)} today's cases", flush=True)
+            print(f"Found {len(today_cases)} cases today", flush=True)
             self._upsert_case_rows(
                 layout=self.today_cases_layout,
                 widget_map=self.today_case_widgets,
@@ -1015,16 +1040,14 @@ class DashboardWindow(QMainWindow):
             
             # Populate yesterday's cases
             yesterday_cases = cases_data.get("yesterday", [])
-            print(f"[_handle_cases_response] Found {len(yesterday_cases)} yesterday's cases", flush=True)
+            print(f"Found {len(yesterday_cases)} cases yesterday", flush=True)
             self._upsert_case_rows(
                 layout=self.yesterday_cases_layout,
                 widget_map=self.yesterday_case_widgets,
                 cases=yesterday_cases,
                 fallback_scan_type="CBCT",
             )
-            
-            # print(f"[_handle_cases_response] Cases update complete", flush=True)
-            
+                        
         except Exception as e:
             print(f"[_handle_cases_response] Exception: {e}", flush=True)
             logger.error(f"Error handling cases response: {e}")
@@ -1378,30 +1401,12 @@ class DashboardWindow(QMainWindow):
 def main():
     try:
         logger.info("[MAIN] Starting application...")
-        logger.info("[MAIN] Creating QApplication...")
         app = QApplication(sys.argv)
-        logger.info("[MAIN] QApplication created successfully")
-        
-        logger.info("[MAIN] Setting font...")
         app.setFont(QFont("Segoe UI", 10))
-        logger.info("[MAIN] Font set successfully")
-
-        logger.info("[MAIN] Setting theme...")
         if setTheme and Theme:
             setTheme(Theme.DARK)
-            logger.info("[MAIN] Fluent theme applied")
-        else:
-            logger.info("[MAIN] Fluent theme not available, using default")
-
-        logger.info("[MAIN] Creating DashboardWindow...")
-        window = DashboardWindow()
-        logger.info("[MAIN] DashboardWindow created successfully")
-        
-        logger.info("[MAIN] Showing window...")
+        window = DashboardWindow()        
         window.show()
-        logger.info("[MAIN] Window shown successfully")
-
-        logger.info("[MAIN] Starting event loop...")
         sys.exit(app.exec())
     except Exception as e:
         import traceback

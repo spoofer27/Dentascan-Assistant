@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from service_config import SERVICE_NAME, SERVICE_API_HOST, SERVICE_API_PORT, SERVICE_STAGING_PATH
+from unified_logging import get_service_logger, get_service_log_path, read_service_log_tail
+
+logger = get_service_logger(__name__)
 
 HOST = os.environ.get("SERVICE_API_HOST", SERVICE_API_HOST)
 PORT = int(os.environ.get("SERVICE_API_PORT", str(SERVICE_API_PORT)))
@@ -386,6 +389,7 @@ def get_cases_data():
         }
     except Exception as exc:
         append_ui_log(f"Cases API error: {exc}", source="service_api")
+        logger.exception("Cases API error")
         return {
             "ok": False,
             "error": str(exc),
@@ -430,6 +434,24 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             logs = get_ui_logs(since_id=since_id, limit=limit)
             payload = {"ok": True, "logs": logs}
+            write_json(self, 200, payload)
+            return
+
+        if parsed.path == "/api/service-log":
+            qs = parse_qs(parsed.query or "")
+            limit = 200
+            if "limit" in qs:
+                try:
+                    limit = int(qs.get("limit", [limit])[0])
+                except Exception:
+                    pass
+
+            lines = read_service_log_tail(limit=limit)
+            payload = {
+                "ok": True,
+                "path": str(get_service_log_path()),
+                "lines": lines,
+            }
             write_json(self, 200, payload)
             return
 
@@ -523,9 +545,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/uninstall":
-            print("Uninstall requested")
+            logger.info("Uninstall requested")
             if not is_admin():
-                print("Uninstall failed: not admin")
+                logger.warning("Uninstall failed: not admin")
                 write_json(self, 403, {"ok": False, "output": "Administrator privileges required"})
                 return
 
@@ -546,8 +568,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Service API running on http://{HOST}:{PORT}")
-    print(f"Service name: {SERVICE_NAME}")
+    logger.info("Service API running on http://%s:%s", HOST, PORT)
+    logger.info("Service name: %s", SERVICE_NAME)
     server.serve_forever()
 
 

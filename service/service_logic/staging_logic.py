@@ -13,10 +13,7 @@ import pydicom
 from pydicom.errors import InvalidDicomError
 from pydicom.misc import is_dicom
 import logging
-from logging.handlers import RotatingFileHandler
 import json
-from urllib import request
-from urllib.error import URLError
 import importlib
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.encaps import encapsulate, generate_pixel_data_frame
@@ -37,7 +34,16 @@ except ImportError:
         sys.path.insert(0, service_dir)
     import service_config
 
-logger = logging.getLogger(__name__)
+try:
+    from service.unified_logging import get_service_logger
+except Exception:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    service_dir = os.path.dirname(current_dir)
+    if service_dir not in sys.path:
+        sys.path.insert(0, service_dir)
+    from unified_logging import get_service_logger
+
+logger = get_service_logger(__name__)
 
 try:
     from . import ris_logic
@@ -85,20 +91,7 @@ class StagingLogic:
 
 
     def _post_ui_log(self, message: str, source: str = "StagingLogic"):
-        print(f"[{source}] {message}", flush=True)
-        host = getattr(service_config, "SERVICE_API_HOST", "127.0.0.1")
-        port = int(getattr(service_config, "SERVICE_API_PORT", 8085))
-        url = f"http://{host}:{port}/api/ui-log"
-        try:
-            data = json.dumps({"message": message, "source": source}).encode("utf-8")
-            req = request.Request(url, data=data, method="POST")
-            req.add_header("Content-Type", "application/json; charset=utf-8")
-            with request.urlopen(req, timeout=0.5) as resp:
-                resp.read(0)
-        except URLError:
-            pass
-        except Exception:
-            pass
+        logger.info("[%s] %s", source, message)
     
     @classmethod
     def from_config(cls, ris_enabled: bool = True) -> "StagingLogic":
@@ -360,7 +353,7 @@ class StagingLogic:
                 f.write(new_content)
 
             temp_file.replace(file_path)
-            print(f"Case {case.get('name', '')} details written", flush=True)
+            logger.info("Case %s details written", case.get("name", ""))
         # 🔓 LOCK END
 
     def find_cases(self):            
@@ -623,7 +616,7 @@ class StagingLogic:
                                                         continue
                                                 except Exception as exc: # check failed or copy failed
                                                     self._post_ui_log(f"Failed to copy PDF file {item.name}: {exc}")
-                                                    print(f"Failed to copy PDF file {item.name}: {exc}")
+                                                    logger.exception("Failed to copy PDF file %s", item.name)
                                                     pass
                                             
                                                 if study_info is None:  #  create study_info
@@ -1047,7 +1040,7 @@ class StagingLogic:
                                                         continue
                                                 except Exception as exc: # check failed or copy failed
                                                     self._post_ui_log(f"Failed to copy PDF file {item.name}: {exc}")
-                                                    print(f"Failed to copy PDF file {item.name}: {exc}")
+                                                    logger.exception("Failed to copy PDF file %s", item.name)
                                                     pass
                                             
                                                 if study_info is None:  #  create study_info
@@ -1224,8 +1217,8 @@ class StagingLogic:
 
 def _run_console_debug(poll_seconds: int = 5):
     stop_event = threading.Event()
-    print("Starting staging_logic console debug mode...")
-    print("Press Ctrl+C to stop.")
+    logger.info("Starting staging_logic console debug mode...")
+    logger.info("Press Ctrl+C to stop.")
 
     try:
         monitor = StagingLogic.from_config()
@@ -1235,15 +1228,15 @@ def _run_console_debug(poll_seconds: int = 5):
                 monitor.ensure_today_staging_folder()
                 case_count, _ = monitor.find_cases()
                 now = datetime.now().strftime("%d-%m-%Y %I.%M%p").lower()
-                print(f"{now} - Found {case_count} Cases")
+                logger.info("%s - Found %s Cases", now, case_count)
             except Exception as exc:
-                print(f"Error in staging_logic debug loop: {exc}")
+                logger.exception("Error in staging_logic debug loop")
 
             if stop_event.wait(timeout=poll_seconds):
                 break
     except KeyboardInterrupt:
         stop_event.set()
-        print("Keyboard interrupt received. Stopping staging_logic debug mode...")
+        logger.info("Keyboard interrupt received. Stopping staging_logic debug mode...")
 
 
 if __name__ == "__main__":

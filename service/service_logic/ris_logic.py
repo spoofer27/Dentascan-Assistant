@@ -12,6 +12,7 @@ import os
 import re
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
+import logging
 
 
 def _inject_project_venv_site_packages() -> bool:
@@ -85,6 +86,17 @@ except ImportError:
         sys.path.insert(0, service_dir)
     import service_config
 
+try:
+    from service.unified_logging import get_service_logger
+except Exception:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    service_dir = os.path.dirname(current_dir)
+    if service_dir not in sys.path:
+        sys.path.insert(0, service_dir)
+    from unified_logging import get_service_logger
+
+logger = get_service_logger(__name__)
+
 
 # --- Selenium scraper function ---
 # Global driver state used by the three separate actions
@@ -95,20 +107,7 @@ _log_throttle_lock = Lock()
 _last_log_by_key = {}
 
 def _post_ui_log(message: str, source: str = "RISLogic"):
-        print(f"[{source}] {message}", flush=True)
-        host = getattr(service_config, "SERVICE_API_HOST", "127.0.0.1")
-        port = int(getattr(service_config, "SERVICE_API_PORT", 8085))
-        url = f"http://{host}:{port}/api/ui-log"
-        try:
-            data = json.dumps({"message": message, "source": source}).encode("utf-8")
-            req = request.Request(url, data=data, method="POST")
-            req.add_header("Content-Type", "application/json; charset=utf-8")
-            with request.urlopen(req, timeout=0.5) as resp:
-                resp.read(0)
-        except URLError:
-            pass
-        except Exception:
-            pass
+        logger.info("[%s] %s", source, message)
 
 
 def _post_ui_log_throttled(key: str, message: str, min_interval_seconds: float = 20.0, source: str = "RISLogic"):
@@ -137,10 +136,10 @@ def _post_ris_status(online: bool):
                 resp.read(0)
             _post_ui_log(f"RIS status updated: {'Online' if online else 'Offline'}")
         except URLError as e:
-            _post_ui_log(f"Failed to update RIS status: {e}", source="RISLogic")
+            logger.warning("Failed to update RIS status: %s", e)
             pass
         except Exception as e:
-            _post_ui_log(f"Unexpected error updating RIS status: {e}", source="RISLogic")
+            logger.exception("Unexpected error updating RIS status: %s", e)
             pass
 
 
@@ -531,7 +530,7 @@ def run_search_case_by_code(case_code, log_widget=None):
             _post_ui_log(f"Search returned empty data for case {code_value}; skipping update.")
             return None
 
-        print("Final extracted data:", results)
+        logger.info("Final extracted data: %s", results)
         return results
 
 def run_logout(log_widget=None):

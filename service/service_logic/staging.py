@@ -4,10 +4,6 @@ from pathlib import Path
 import os
 import sys
 import logging
-from logging.handlers import RotatingFileHandler
-import json
-from urllib import request
-from urllib.error import URLError
 import threading
 
 try:
@@ -26,7 +22,15 @@ try:
 except ImportError:
     from staging_logic import StagingLogic
 
-logger = logging.getLogger(__name__)
+try:
+    from service.unified_logging import get_service_logger
+except Exception:
+    service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if service_dir not in sys.path:
+        sys.path.insert(0, service_dir)
+    from unified_logging import get_service_logger
+
+logger = get_service_logger(__name__)
 import importlib
 try:
     from . import ris_logic
@@ -53,34 +57,21 @@ else:
 
 def _run_console_debug():
     stop_event = threading.Event()
-    print("Starting staging console debug mode...")
-    print("Press Ctrl+C to stop.")
+    logger.info("Starting staging console debug mode...")
+    logger.info("Press Ctrl+C to stop.")
 
     try:
         main(stop_event)
     except KeyboardInterrupt:
         stop_event.set()
-        print("Keyboard interrupt received. Stopping staging debug mode...")
+        logger.info("Keyboard interrupt received. Stopping staging debug mode...")
 
 def _post_ui_log(message: str, source: str = "ServiceLog", color: str | None = None):
-    print(f"[{source}] {message}", flush=True)
-    host = getattr(service_config, "SERVICE_API_HOST", "127.0.0.1")
-    port = int(getattr(service_config, "SERVICE_API_PORT", 8085))
-    url = f"http://{host}:{port}/api/ui-log"
-    try:
-        payload = {"message": message, "source": source}
-        if color:
-            payload["color"] = color
-        data = json.dumps(payload).encode("utf-8")
-        req = request.Request(url, data=data, method="POST")
-        req.add_header("Content-Type", "application/json; charset=utf-8")
-        with request.urlopen(req, timeout=0.5) as resp:
-            # Best-effort: ignore body
-            resp.read(0)
-    except URLError:
-        pass
-    except Exception:
-        pass
+    text = f"[{source}] {message}"
+    if color == "red":
+        logger.error(text)
+    else:
+        logger.info(text)
 
 
 def main(stop_event):
@@ -95,7 +86,7 @@ def main(stop_event):
                 folder_path = monitor.ensure_today_folder() # gets today's folder
                 staging_folder_path = monitor.ensure_today_staging_folder() # gets today's staging folder
             except Exception as exc:
-                print(f"Error initializing staging logic: {exc}")
+                logger.exception("Error initializing staging logic")
                 servicemanager.LogErrorMsg(f"Error initializing staging logic: {exc}")
                 _post_ui_log(f"Error initializing staging logic: {exc}", source="ServiceLog", color="red")
 
@@ -110,7 +101,7 @@ def main(stop_event):
                     minute = time.strftime("%M", now)
                     suffix = time.strftime("%p", now).lower()
                     header_time = f"{hour}.{minute}{suffix}"
-                    print(f"{date_str} {header_time} - Found {case_count} Cases", flush=True)
+                    logger.info("%s %s - Found %s Cases", date_str, header_time, case_count)
                     _post_ui_log(f"{date_str} {header_time} - Found {case_count} Cases", source="ServiceLog")
                     for idx, case in enumerate(cases, start=1):
                         name = case.get("name", "")
@@ -127,7 +118,19 @@ def main(stop_event):
                         case_has_project = case.get("has_project", False)
                         case_project_count = case.get("project_count", 0)
                         case_romexis = case.get("romexis", False)
-                        print(f"    {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", flush=True)
+                        logger.info(
+                            "    %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
+                            idx,
+                            name,
+                            case_date,
+                            case_time,
+                            case_pdf_count,
+                            case_image_count,
+                            case_single_dicom_count,
+                            case_multiple_dicom_count,
+                            case_project_count,
+                            case_romexis,
+                        )
                         _post_ui_log(f"     {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
 
                     # Check yesterday's cases every 30 seconds (every 6 iterations)
@@ -144,11 +147,11 @@ def main(stop_event):
                                 minute = time.strftime("%M", now)
                                 suffix = time.strftime("%p", now).lower()
                                 header_time = f"{hour}.{minute}{suffix}"
-                                print("=============================================================================", flush=True)
+                                logger.info("=============================================================================")
                                 _post_ui_log("=============================================================================", source="ServiceLog")
-                                print(f"Yesterday recovery: processed {yesterday_count} case(s)", flush=True)
+                                logger.info("Yesterday recovery: processed %s case(s)", yesterday_count)
                                 _post_ui_log(f"Yesterday recovery: processed {yesterday_count} case(s)", source="ServiceLog")
-                                print(f"{date_str} {header_time} - Found {yesterday_count} Cases", flush=True)
+                                logger.info("%s %s - Found %s Cases", date_str, header_time, yesterday_count)
                                 _post_ui_log(f"{date_str} {header_time} - Found {yesterday_count} Cases", source="ServiceLog")
                                 for idx, case in enumerate(yesterday_cases, start=1):
                                     name = case.get("name", "")
@@ -165,7 +168,19 @@ def main(stop_event):
                                     case_has_project = case.get("has_project", False)
                                     case_project_count = case.get("project_count", 0)
                                     case_romexis = case.get("romexis", False)
-                                    print(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", flush=True)
+                                    logger.info(
+                                        "  %s-%s-%s-%s-PDFs:%s-IMGs:%s-DICOMs:%s-M-DICOMs:%s-Projs:%s-Rmx:%s",
+                                        idx,
+                                        name,
+                                        case_date,
+                                        case_time,
+                                        case_pdf_count,
+                                        case_image_count,
+                                        case_single_dicom_count,
+                                        case_multiple_dicom_count,
+                                        case_project_count,
+                                        case_romexis,
+                                    )
                                     _post_ui_log(f"  {idx}-{name}-{case_date}-{case_time}-PDFs:{case_pdf_count}-IMGs:{case_image_count}-DICOMs:{case_single_dicom_count}-M-DICOMs:{case_multiple_dicom_count}-Projs:{case_project_count}-Rmx: {case_romexis}", source="ServiceLog")
 
                         except Exception as exc:
@@ -186,7 +201,7 @@ def main(stop_event):
 
                         
                 except Exception as exc:
-                    print(f"Error in staging loop: {exc}")
+                    logger.exception("Error in staging loop")
                     servicemanager.LogErrorMsg(f"Error in staging loop: {exc}")
                     _post_ui_log(f"Error in staging loop: {exc}", source="ServiceLog", color="red")
             
@@ -202,7 +217,7 @@ def main(stop_event):
                 time.sleep(5)
     
     except Exception as exc:
-        print(f"Error in staging thread: {exc}")
+        logger.exception("Error in staging thread")
         servicemanager.LogErrorMsg(f"Error in staging thread: {exc}")
         _post_ui_log(f"Error in staging thread: {exc}", source="ServiceLog", color="red")
         raise
